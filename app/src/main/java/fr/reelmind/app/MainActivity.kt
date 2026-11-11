@@ -28,7 +28,6 @@ import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import androidx.lifecycle.viewModelScope
 
 @Entity(tableName = "reels", indices = [Index(value = ["url"], unique = true)])
 data class Reel(@PrimaryKey(autoGenerate = true) val id: Long = 0, val url: String, val title: String = "Publication Instagram", val summary: String = "", val note: String = "", val category: String = "À classer", val favorite: Boolean = false, val createdAt: Long = System.currentTimeMillis())
@@ -50,7 +49,7 @@ class ReelModel : ViewModel() {
     lateinit var dao: ReelDao
     fun initialize(activity: ComponentActivity) {
         dao = Room.databaseBuilder(activity.applicationContext, ReelDatabase::class.java, "reelmind.db").build().dao()
-        androidx.lifecycle.viewModelScope.launch { dao.observe().collectLatest { reels = it } }
+        viewModelScope.launch { dao.observe().collectLatest { reels = it } }
         val prefs = activity.getSharedPreferences("settings", 0)
         provider = prefs.getString("provider", "Gemini") ?: "Gemini"
         modelName = prefs.getString("model", "gemini-2.5-flash") ?: "gemini-2.5-flash"
@@ -58,10 +57,10 @@ class ReelModel : ViewModel() {
     fun saveProvider(activity: ComponentActivity, value: String) { provider = value; activity.getSharedPreferences("settings", 0).edit().putString("provider", value).apply() }
     fun saveModel(activity: ComponentActivity, value: String) { modelName = value; activity.getSharedPreferences("settings", 0).edit().putString("model", value).apply() }
     fun add(url: String, onResult: (Boolean) -> Unit) {
-        androidx.lifecycle.viewModelScope.launch { onResult(dao.insert(Reel(url = url)) != -1L) }
+        viewModelScope.launch { onResult(dao.insert(Reel(url = url)) != -1L) }
     }
-    fun update(reel: Reel) { androidx.lifecycle.viewModelScope.launch { dao.update(reel) } }
-    fun remove(reel: Reel) { androidx.lifecycle.viewModelScope.launch { dao.delete(reel) } }
+    fun update(reel: Reel) { viewModelScope.launch { dao.update(reel) } }
+    fun remove(reel: Reel) { viewModelScope.launch { dao.delete(reel) } }
 }
 
 class MainActivity : ComponentActivity() {
