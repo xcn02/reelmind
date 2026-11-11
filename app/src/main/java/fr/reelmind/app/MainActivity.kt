@@ -28,6 +28,7 @@ import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import androidx.lifecycle.viewModelScope
 
 @Entity(tableName = "reels", indices = [Index(value = ["url"], unique = true)])
 data class Reel(@PrimaryKey(autoGenerate = true) val id: Long = 0, val url: String, val title: String = "Publication Instagram", val summary: String = "", val note: String = "", val category: String = "À classer", val favorite: Boolean = false, val createdAt: Long = System.currentTimeMillis())
