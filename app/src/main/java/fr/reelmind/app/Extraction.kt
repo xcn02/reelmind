@@ -3,7 +3,6 @@ package fr.reelmind.app
 import android.content.Context
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
-import com.yausername.youtubedl_android.ffmpeg.FFmpeg
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -73,7 +72,6 @@ object LocalExtractor {
     fun initialize(context: Context) {
         synchronized(lock) {
             YoutubeDL.getInstance().init(context.applicationContext)
-            FFmpeg.getInstance().init(context.applicationContext)
         }
     }
 
@@ -102,15 +100,12 @@ object LocalExtractor {
             val folder = File(context.cacheDir, "reelmind_${System.nanoTime()}").apply { mkdirs() }
             val request = YoutubeDLRequest(url)
             request.addOption("--no-playlist")
-            request.addOption("-f", "bestaudio/best")
-            request.addOption("-x")
-            request.addOption("--audio-format", "mp3")
-            request.addOption("--audio-quality", "7")
+            request.addOption("-f", "bestaudio[ext=m4a]/bestaudio[ext=mp3]")
             request.addOption("--max-filesize", "35M")
             request.addOption("-o", File(folder, "audio.%(ext)s").absolutePath)
             try {
                 YoutubeDL.getInstance().execute(request)
-                audio = folder.listFiles()?.firstOrNull { it.extension == "mp3" || it.extension == "m4a" }
+                audio = folder.listFiles()?.firstOrNull { it.extension.lowercase() in setOf("mp3", "m4a") }
                 files.addAll(folder.listFiles()?.toList().orEmpty())
             } finally { /* Files are deleted after transcription by the coordinator. */ }
         }
