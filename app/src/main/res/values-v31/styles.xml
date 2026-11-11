@@ -1,7 +1,7 @@
 <resources>
 <style name="Theme.ReelMind.Launch" parent="android:style/Theme.Material.NoActionBar">
     <item name="android:windowSplashScreenBackground">@color/reelmind_slate</item>
-    <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_reelmind_foreground</item>
+    <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_reelmind_original</item>
     <item name="android:windowBackground">@color/reelmind_slate</item>
     <item name="android:statusBarColor">@color/reelmind_slate</item>
     <item name="android:navigationBarColor">@color/reelmind_slate</item>
