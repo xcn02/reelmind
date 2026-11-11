@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Bookmark: left half; circuit brain: right half. No white outer frame. -->
+    <path android:fillColor="#FFFFFF" android:pathData="M24,25 L50,25 Q53,25 53,29 L53,81 L40,71 L27,81 L27,29 Q27,25 30,25 Z"/>
+    <path android:fillColor="#294659" android:pathData="M34,37 L45,37 L45,60 L34,60 Z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M61,35 C61,27 73,26 76,34 C84,33 89,40 86,47 C95,52 94,64 86,68 C87,79 74,85 68,77 C59,78 56,72 56,66 L56,41 C56,38 58,35 61,35 Z"/>
+    <path android:fillColor="#294659" android:pathData="M64,39 C65,34 72,34 73,40 C80,38 84,45 81,50 C89,55 86,63 81,65 C83,73 74,77 70,70 C64,73 61,67 61,63 L61,43 Z"/>
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="2.5" android:strokeLineCap="round" android:fillColor="@android:color/transparent" android:pathData="M60,47 L72,47 L77,42 M60,56 L80,56 M60,65 L70,65 L76,71"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M77,39 a3,3 0,1 0,0.01 0 M80,53 a3,3 0,1 0,0.01 0 M76,68 a3,3 0,1 0,0.01 0"/>
+</vector>

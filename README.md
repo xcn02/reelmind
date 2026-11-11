@@ -1,25 +1,29 @@
-# ReelMind Android — V0.1 (Kotlin + Jetpack Compose)
+# ReelMind Android v0.2.1 (Kotlin + Jetpack Compose)
 
-Projet Android natif, sans Flutter. Prototype de bibliothèque locale avec Room/SQLite, recherche, favoris, fiches éditables, réception de liens Instagram via Android ACTION_SEND, paramètres de fournisseur IA.
+## Nouveautés 0.2.1
+- Icône adaptative bleu ardoise sans bordure blanche, marque-page + cerveau électronique.
+- Splash screen sombre natif (Android 12+) et fond de lancement sombre pour Android 8–11.
+- Création de Room déplacée hors du thread principal ; état de chargement affiché dans la bibliothèque.
+- Initialisation du ViewModel protégée contre les appels répétés.
+- versionCode 2 pour mise à jour de la V0.1, sous réserve de la même signature.
 
-## Fonctionnalités non disponibles dans cette version
-Pas encore d'extraction automatique de légende/vidéo, transcription, génération de résumé par LLM, chat, notifications ni synchronisation. Le champ « résumé » est éditable manuellement. Les paramètres IA sont sauvegardés mais ne déclenchent aucun appel réseau.
+## Fonctionnalités
+- Réception de liens Instagram depuis le partage Android et saisie manuelle.
+- Bibliothèque SQLite Room, recherche, favoris, notes et catégories.
+- Ajout manuel de texte source (légende ou transcription).
+- Résumé en français par API Gemini (clé personnelle, réseau requis).
+- Export Markdown d’une fiche ou de la bibliothèque par le menu de partage Android.
+- Migration Room 1 → 2 : conservation des fiches de v0.1 lors de la mise à jour.
 
-## Compiler sans PC avec GitHub
-1. Créer un dépôt GitHub privé vide.
-2. Importer **le contenu** de cette archive à la racine du dépôt (pas un dossier parent). Le fichier `.github/workflows/android.yml` doit être présent.
-3. Ouvrir **Actions → Build ReelMind APK → Run workflow**, ou attendre la compilation déclenchée par le push sur main.
-4. Ouvrir l'exécution terminée, télécharger l'artefact `ReelMind-v0.1-APK`, puis installer `app-debug.apk` sur Android.
+## Non inclus
+- Extraction automatique des vidéos, légendes et transcriptions Instagram.
+- Connexion effective aux fournisseurs Groq, OpenAI ou Ollama (seul Gemini est actif).
+- Chat avec les Reels, transcription audio, notifications, synchronisation Notion.
 
-Si GitHub n'affiche que des modèles de workflow, le dossier caché `.github/workflows` n'a pas été importé. Créer `.github/workflows/android.yml` manuellement avec le contenu du fichier de cette archive.
+## Installer
+Dans GitHub Actions, lancer `Build ReelMind APK`, puis télécharger l'artifact `ReelMind-v0.2.1-APK` et installer l'APK debug.
 
-## Configuration
-- Android min SDK 26, target SDK 35
-- JDK 17, Gradle 8.9, Android Gradle Plugin 8.7.3, Kotlin 2.0.21
-- Compilation avec `gradle :app:assembleDebug` (ou Gradle Wrapper si ajouté localement)
+**Important** : installer la nouvelle version par-dessus l’ancienne (même applicationId et signature debug). Une signature différente peut nécessiter une désinstallation et ferait perdre les données locales. Sauvegarder/exporter la bibliothèque avant toute désinstallation. Les clés Gemini sont stockées dans SharedPreferences non chiffrées et envoyées uniquement à l’API Gemini ; ne pas utiliser de clé sensible sur un appareil non fiable.
 
-## Confidentialité
-Les fiches sont conservées dans une base Room locale. Aucune clé API n'est demandée ni enregistrée dans cette version. Ne jamais publier de clés API dans GitHub.
-
-## État de validation
-Le projet a été généré, mais la compilation Gradle n'a pas pu être exécutée dans l'environnement de création faute de SDK Android et de Gradle. Le premier run GitHub Actions permettra de confirmer le build et d'identifier toute erreur éventuelle.
+## Fonctionnement
+`MainActivity` reçoit le partage et affiche l'UI Compose ; `ReelModel` (ViewModel) gère l'état, les coroutines et les opérations Room ; `ReelDatabase` persiste les fiches ; `GeminiClient` envoie le texte source à l'API et reçoit un résumé. L’UI observe les changements automatiquement.
