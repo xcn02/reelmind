@@ -1,35 +1,45 @@
-
-name: Build ReelMind APK
-
+name: Build ReelMind signed release
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Check Android SDK
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Restore signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.REELMIND_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.REELMIND_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.REELMIND_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.REELMIND_KEY_PASSWORD }}
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          ls -la "$ANDROID_HOME"
-          gradle --version
-
-      - name: Build debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace
-
+          test -n "$KEYSTORE_B64" || { echo 'Missing REELMIND_KEYSTORE_B64 secret'; exit 1; }
+          test -n "$KEYSTORE_PASSWORD" || { echo 'Missing REELMIND_KEYSTORE_PASSWORD secret'; exit 1; }
+          test -n "$KEY_ALIAS" || { echo 'Missing REELMIND_KEY_ALIAS secret'; exit 1; }
+          test -n "$KEY_PASSWORD" || { echo 'Missing REELMIND_KEY_PASSWORD secret'; exit 1; }
+          umask 077
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/reelmind-release.jks"
+          echo "REELMIND_KEYSTORE_PATH=$RUNNER_TEMP/reelmind-release.jks" >> "$GITHUB_ENV"
+          echo "REELMIND_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "REELMIND_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "REELMIND_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+      - name: Build signed release APK
+        run: gradle :app:assembleRelease --no-daemon --console=plain
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ReelMind-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: ReelMind-release-signed
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
