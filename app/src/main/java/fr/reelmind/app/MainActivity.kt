@@ -45,6 +45,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import android.speech.tts.TextToSpeech
 import java.util.Locale
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 
 @Entity(tableName = "reels", indices = [Index(value = ["url"], unique = true)])
 data class Reel(@PrimaryKey(autoGenerate = true) val id: Long = 0, val url: String, val title: String = "Publication Instagram", val summary: String = "", val sourceText: String = "", val note: String = "", val category: String = "À classer", val favorite: Boolean = false, val createdAt: Long = System.currentTimeMillis(), val processingStatus: String = "waiting", val processingError: String = "", val mediaText: String = "")
