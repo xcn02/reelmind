@@ -5,4 +5,5 @@
     <item name="android:navigationBarColor">@color/reelmind_slate</item>
     <item name="android:windowLightStatusBar">false</item>
 </style>
+<style name="Theme.ReelMind.Dialog" parent="android:style/Theme.Material.Light.Dialog.NoActionBar"><item name="android:windowIsTranslucent">true</item><item name="android:windowBackground">@android:color/transparent</item></style>
 </resources>

@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "fr.reelmind.app"
     compileSdk = 35
-    defaultConfig { applicationId = "fr.reelmind.app"; minSdk = 26; targetSdk = 35; versionCode = 4; versionName = "0.4.0" }
+    defaultConfig { applicationId = "fr.reelmind.app"; minSdk = 26; targetSdk = 35; versionCode = 5; versionName = "0.5.0" }
     signingConfigs {
         create("production") {
             val keystore = System.getenv("REELMIND_KEYSTORE_PATH")
@@ -34,11 +34,14 @@ dependencies {
     implementation(bom)
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.compose.ui:ui")
+    implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("io.github.junkfood02.youtubedl-android:library:0.18.0")
+    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.0")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")

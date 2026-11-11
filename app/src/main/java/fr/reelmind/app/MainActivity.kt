@@ -43,13 +43,15 @@ import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import coil.compose.AsyncImage
+import androidx.compose.ui.layout.ContentScale
 import android.speech.tts.TextToSpeech
 import java.util.Locale
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 
 @Entity(tableName = "reels", indices = [Index(value = ["url"], unique = true)])
-data class Reel(@PrimaryKey(autoGenerate = true) val id: Long = 0, val url: String, val title: String = "Publication Instagram", val summary: String = "", val sourceText: String = "", val note: String = "", val category: String = "À classer", val favorite: Boolean = false, val createdAt: Long = System.currentTimeMillis(), val processingStatus: String = "waiting", val processingError: String = "", val mediaText: String = "")
+data class Reel(@PrimaryKey(autoGenerate = true) val id: Long = 0, val url: String, val title: String = "Publication Instagram", val summary: String = "", val sourceText: String = "", val note: String = "", val category: String = "À classer", val favorite: Boolean = false, val createdAt: Long = System.currentTimeMillis(), val processingStatus: String = "waiting", val processingError: String = "", val mediaText: String = "", val author: String = "", val thumbnailUrl: String = "", val mediaKind: String = "", val originalCaption: String = "")
 
 @Dao interface ReelDao {
     @Query("SELECT * FROM reels ORDER BY createdAt DESC") fun observe(): Flow<List<Reel>>
@@ -67,7 +69,7 @@ data class ChatMessage(@PrimaryKey(autoGenerate = true) val id: Long = 0, val re
     @Insert suspend fun insert(message: ChatMessage)
     @Query("DELETE FROM chat_messages WHERE reelId = :reelId") suspend fun clear(reelId: Long)
 }
-@Database(entities = [Reel::class, ChatMessage::class], version = 4, exportSchema = false)
+@Database(entities = [Reel::class, ChatMessage::class], version = 5, exportSchema = false)
 abstract class ReelDatabase : RoomDatabase() { abstract fun dao(): ReelDao; abstract fun chatDao(): ChatDao }
 
 val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -88,6 +90,15 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
         db.execSQL("ALTER TABLE reels ADD COLUMN processingStatus TEXT NOT NULL DEFAULT 'waiting'")
         db.execSQL("ALTER TABLE reels ADD COLUMN processingError TEXT NOT NULL DEFAULT ''")
         db.execSQL("ALTER TABLE reels ADD COLUMN mediaText TEXT NOT NULL DEFAULT ''")
+    }
+}
+
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE reels ADD COLUMN author TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE reels ADD COLUMN thumbnailUrl TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE reels ADD COLUMN mediaKind TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE reels ADD COLUMN originalCaption TEXT NOT NULL DEFAULT ''")
     }
 }
 
@@ -127,7 +138,7 @@ class ReelModel : ViewModel() {
             try {
                 val databaseDao = withContext(Dispatchers.IO) {
                     Room.databaseBuilder(activity.applicationContext, ReelDatabase::class.java, "reelmind.db")
-                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
+                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
                 }
                 dao = databaseDao.dao()
                 chatDao = databaseDao.chatDao()
@@ -256,7 +267,25 @@ class ReelModel : ViewModel() {
         viewModelScope.launch {
             try {
                 val transcript = withContext(Dispatchers.IO) {
-                    MediaTranscriber.transcribe(appContext, uri, apiKey, provider)
+                    if (appContext.contentResolver.getType(uri)?.startsWith("image/") == true) {
+                        val file = java.io.File.createTempFile("reelmind_upload_", ".jpg", appContext.cacheDir)
+                        try {
+                            appContext.contentResolver.openInputStream(uri)?.use { input -> file.outputStream().use { input.copyTo(it) } }
+                            val key = appContext.getSharedPreferences("settings", 0).getString("key_Gemini", "").orEmpty()
+                            "Analyse d'image :\n" + GeminiImages.describe(listOf(file), key)
+                        } finally { file.delete() }
+                    } else {
+                        val groqKey = appContext.getSharedPreferences("settings", 0).getString("key_Groq", "").orEmpty()
+                        val mime = appContext.contentResolver.getType(uri).orEmpty()
+                        if (mime.startsWith("audio/") && groqKey.isNotBlank()) {
+                            val ext = if (mime.contains("mpeg") || mime.contains("mp3")) ".mp3" else ".m4a"
+                            val file = java.io.File.createTempFile("reelmind_upload_", ext, appContext.cacheDir)
+                            try {
+                                appContext.contentResolver.openInputStream(uri)?.use { input -> file.outputStream().use { input.copyTo(it) } }
+                                GroqWhisper.transcribe(file, groqKey)
+                            } finally { file.delete() }
+                        } else MediaTranscriber.transcribe(appContext, uri, apiKey, provider)
+                    }
                 }
                 val fresh = dao.byId(reel.id) ?: return@launch
                 dao.update(fresh.copy(mediaText = transcript, sourceText =
@@ -272,7 +301,7 @@ class ReelModel : ViewModel() {
         viewModelScope.launch {
             while (!::dao.isInitialized && isLoading) delay(40)
             if (!::dao.isInitialized) { onResult(false); return@launch }
-            val insertedId = dao.insert(Reel(url = url, sourceText = caption))
+            val insertedId = dao.insert(Reel(url = url, sourceText = caption, originalCaption = caption))
             if (insertedId > 0L && autoProcess) enqueue(insertedId)
             onResult(insertedId > 0L)
         }
@@ -325,7 +354,7 @@ class MainActivity : ComponentActivity() {
     }
     fun chooseMedia(onPicked: (Uri) -> Unit) {
         mediaImportHandler = onPicked
-        mediaPicker.launch(arrayOf("audio/*", "video/*"))
+        mediaPicker.launch(arrayOf("audio/*", "video/*", "image/*"))
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -387,6 +416,8 @@ private val purple = Color(0xFFB59BFF)
                         Switch(checked = vm.autoProcess, onCheckedChange = { vm.saveAutoProcess(activity, it) })
                     }
                     Spacer(Modifier.height(16.dp))
+                    ExtractionSettingsPanel(activity)
+                    Spacer(Modifier.height(16.dp))
                     var expanded by remember { mutableStateOf(false) }
                     ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
                         OutlinedTextField(vm.provider, {}, readOnly = true, label = { Text("Fournisseur") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) }, modifier = Modifier.menuAnchor().fillMaxWidth())
@@ -404,7 +435,7 @@ private val purple = Color(0xFFB59BFF)
                         OutlinedTextField(vm.ollamaUrl, { vm.saveOllamaUrl(activity, it) },
                             label = { Text("Adresse HTTPS du serveur Ollama") }, modifier = Modifier.fillMaxWidth())
                     }
-                    Text("La transcription de fichiers utilise actuellement Gemini et nécessite une clé Gemini sélectionnée. Les fichiers audio/vidéo sont envoyés à Gemini seulement sur action explicite.", style = MaterialTheme.typography.bodySmall)
+                    Text("Les imports manuels sont traités selon le fichier. Les médias extraits automatiquement peuvent être envoyés à Groq ou Gemini selon tes réglages.", style = MaterialTheme.typography.bodySmall)
                     Text("Les clés API sont stockées localement sans chiffrement dédié. Ne les partage pas. " +
                         "Les appels IA envoient le texte de tes fiches au fournisseur choisi.",
                         style = MaterialTheme.typography.bodySmall)
@@ -443,7 +474,7 @@ private val purple = Color(0xFFB59BFF)
                             Text("Chargement de la bibliothèque…")
                         }
                     } else if (shown.isEmpty()) Text("Aucune publication. Partage un lien Instagram vers ReelMind ou appuie sur +.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) { items(shown, key = { it.id }) { reel -> Card(onClick = { selected = reel }, modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text(reel.title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 2); IconButton(onClick = { vm.update(reel.copy(favorite = !reel.favorite)) }) { Icon(if (reel.favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, "Favori", tint = if (reel.favorite) purple else MaterialTheme.colorScheme.onSurfaceVariant) } }; Text(reel.category, color = purple); Spacer(Modifier.height(6.dp)); Text(reel.summary.ifBlank { when(reel.processingStatus) { "blocked" -> "Contenu inaccessible : ajouter un texte ou fichier"; "extracting" -> "Récupération en cours…"; "summarizing" -> "Résumé en cours…"; "failed" -> "Échec du traitement"; else -> "Enregistré · Résumé en attente" } }, maxLines = 3, overflow = TextOverflow.Ellipsis); Spacer(Modifier.height(6.dp)); Text(reel.url, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) } } } }
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) { items(shown, key = { it.id }) { reel -> Card(onClick = { selected = reel }, modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { if (reel.thumbnailUrl.startsWith("https://")) AsyncImage(model = reel.thumbnailUrl, contentDescription = "Miniature", modifier = Modifier.fillMaxWidth().height(145.dp), contentScale = ContentScale.Crop); Row(verticalAlignment = Alignment.CenterVertically) { Text(reel.title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 2); IconButton(onClick = { vm.update(reel.copy(favorite = !reel.favorite)) }) { Icon(if (reel.favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, "Favori", tint = if (reel.favorite) purple else MaterialTheme.colorScheme.onSurfaceVariant) } }; Text(reel.category, color = purple); Spacer(Modifier.height(6.dp)); Text(reel.summary.ifBlank { when(reel.processingStatus) { "blocked" -> "Contenu inaccessible : ajouter un texte ou fichier"; "extracting" -> "Récupération en cours…"; "summarizing" -> "Résumé en cours…"; "failed" -> "Échec du traitement"; else -> "Enregistré · Résumé en attente" } }, maxLines = 3, overflow = TextOverflow.Ellipsis); Spacer(Modifier.height(6.dp)); Text(reel.url, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) } } } }
                 }
             }
         }
@@ -486,8 +517,10 @@ private val purple = Color(0xFFB59BFF)
         if (reel.processingError.isNotBlank()) Text(reel.processingError, style = MaterialTheme.typography.bodySmall)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onRetry) { Text("Relancer") }
-            OutlinedButton(onClick = onImportMedia) { Text("Importer audio/vidéo") }
+            OutlinedButton(onClick = onImportMedia) { Text("Ajouter audio, vidéo ou image") }
         }
+        if (reel.author.isNotBlank()) Text("Auteur : ${reel.author}", style = MaterialTheme.typography.bodySmall)
+        if (reel.originalCaption.isNotBlank()) Text("Légende originale : ${reel.originalCaption.take(1500)}", style = MaterialTheme.typography.bodySmall)
         if (reel.mediaText.isNotBlank()) Text("Transcription enregistrée (${reel.mediaText.length} caractères)", style = MaterialTheme.typography.bodySmall)
         TextButton(onClick = onOpen) { Text("Ouvrir dans Instagram / navigateur") }
         OutlinedTextField(title, { title = it }, label = { Text("Titre") }, modifier = Modifier.fillMaxWidth())
