@@ -8,12 +8,21 @@ android {
     namespace = "fr.reelmind.app"
     compileSdk = 35
     defaultConfig { applicationId = "fr.reelmind.app"; minSdk = 26; targetSdk = 35; versionCode = 4; versionName = "0.4.0" }
+    signingConfigs {
+        create("production") {
+            val keystore = System.getenv("REELMIND_KEYSTORE_PATH")
+            if (!keystore.isNullOrBlank()) {
+                storeFile = file(keystore)
+                storePassword = System.getenv("REELMIND_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("REELMIND_KEY_ALIAS")
+                keyPassword = System.getenv("REELMIND_KEY_PASSWORD")
+            }
+        }
+    }
     buildTypes {
-        // Private testing only: GitHub runner's debug keystore may change between builds.
-        // For reproducible updates configure a persistent signing key before distribution.
         getByName("release") {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("production")
         }
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
