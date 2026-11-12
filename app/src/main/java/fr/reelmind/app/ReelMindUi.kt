@@ -115,8 +115,8 @@ fun ReelMindScreen(vm: ReelModel, activity: MainActivity) {
                                     items(vm.reels.take(8), key = { it.id }) { reel -> RecentCard(reel, onClick = { selected = reel }) }
                                 }
                             }
-                            item { Row(verticalAlignment = Alignment.CenterVertically) { Box(Modifier.weight(1f)) { SectionTitle("Catégories") }; TextButton(onClick = { showCategories = true }) { Icon(Icons.Default.Add, null); Text("Ajouter") } } }
-                            item { CategoryGrid(categories, vm.reels, onPick = { filter = it; tab = 1 }, onAdd = { showCategories = true }) }
+                            item { Row(verticalAlignment = Alignment.CenterVertically) { Box(Modifier.weight(1f)) { SectionTitle("Catégories") }; IconButton(onClick = { showCategories = true }) { Icon(Icons.Default.AddCircleOutline, "Gérer les catégories") } } }
+                            item { CategoryGrid(categories, vm.reels, onPick = { filter = it; tab = 1 }) }
                             item { SectionTitle("À redécouvrir") }
                             item {
                                 vm.reels.filter { it.summary.isNotBlank() }.drop(3).firstOrNull()?.let { reel ->
@@ -189,7 +189,7 @@ fun ReelMindScreen(vm: ReelModel, activity: MainActivity) {
     }
 }
 
-@Composable private fun CategoryGrid(categories: List<ReelCategory>, reels: List<Reel>, onPick: (String) -> Unit, onAdd: () -> Unit) {
+@Composable private fun CategoryGrid(categories: List<ReelCategory>, reels: List<Reel>, onPick: (String) -> Unit) {
     val items = categories.take(5)
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         items.chunked(2).forEach { row ->
@@ -206,7 +206,6 @@ fun ReelMindScreen(vm: ReelModel, activity: MainActivity) {
                 if (row.size == 1) Spacer(Modifier.weight(1f))
             }
         }
-        OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("Créer une catégorie") }
     }
 }
 
@@ -414,6 +413,10 @@ fun ReelMindScreen(vm: ReelModel, activity: MainActivity) {
             Text(when (reel.processingStatus) { "done" -> "Terminée"; "failed" -> "Échec"; "extracting" -> "Extraction…"; "summarizing" -> "Résumé IA…"; "blocked" -> "Extraction / configuration"; else -> "En attente" }, style = MaterialTheme.typography.labelMedium)
         }
         if (reel.processingError.isNotBlank()) Text(reel.processingError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        if (reel.extractionDiagnostic.isNotBlank()) {
+            Text("Diagnostic extraction : ${reel.extractionDiagnostic}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        }
         if (reel.originalCaption.isNotBlank()) Text("Légende extraite", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (reel.mediaText.isNotBlank()) Text("Transcription disponible", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Ajoute une image, un audio ou une vidéo pour compléter l'analyse. Le fichier temporaire sera supprimé après traitement.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -51,7 +51,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 
 @Entity(tableName = "reels", indices = [Index(value = ["url"], unique = true)])
-data class Reel(@PrimaryKey(autoGenerate = true) val id: Long = 0, val url: String, val title: String = "Publication Instagram", val summary: String = "", val sourceText: String = "", val note: String = "", val category: String = "À classer", val favorite: Boolean = false, val createdAt: Long = System.currentTimeMillis(), val processingStatus: String = "waiting", val processingError: String = "", val mediaText: String = "", val author: String = "", val thumbnailUrl: String = "", val mediaKind: String = "", val originalCaption: String = "")
+data class Reel(@PrimaryKey(autoGenerate = true) val id: Long = 0, val url: String, val title: String = "Publication Instagram", val summary: String = "", val sourceText: String = "", val note: String = "", val category: String = "À classer", val favorite: Boolean = false, val createdAt: Long = System.currentTimeMillis(), val processingStatus: String = "waiting", val processingError: String = "", val mediaText: String = "", val author: String = "", val thumbnailUrl: String = "", val mediaKind: String = "", val originalCaption: String = "", val manualTitle: Boolean = false, val extractionDiagnostic: String = "")
 
 @Dao interface ReelDao {
     @Query("SELECT * FROM reels ORDER BY createdAt DESC") fun observe(): Flow<List<Reel>>
@@ -63,7 +63,8 @@ data class Reel(@PrimaryKey(autoGenerate = true) val id: Long = 0, val url: Stri
     @Query("UPDATE reels SET title = CASE WHEN :changeTitle THEN :title ELSE title END, " +
         "note = CASE WHEN :changeNote THEN :note ELSE note END, " +
         "category = CASE WHEN :changeCategory THEN :category ELSE category END, " +
-        "sourceText = CASE WHEN :changeSource THEN :sourceText ELSE sourceText END WHERE id = :id")
+        "sourceText = CASE WHEN :changeSource THEN :sourceText ELSE sourceText END, " +
+        "manualTitle = CASE WHEN :changeTitle THEN 1 ELSE manualTitle END WHERE id = :id")
     suspend fun saveEditable(id: Long, title: String, changeTitle: Boolean, note: String, changeNote: Boolean,
         category: String, changeCategory: Boolean, sourceText: String, changeSource: Boolean)
     @Query("UPDATE reels SET summary = :summary WHERE id = :id") suspend fun updateSummary(id: Long, summary: String)
@@ -79,7 +80,7 @@ data class ChatMessage(@PrimaryKey(autoGenerate = true) val id: Long = 0, val re
     @Insert suspend fun insert(message: ChatMessage)
     @Query("DELETE FROM chat_messages WHERE reelId = :reelId") suspend fun clear(reelId: Long)
 }
-@Database(entities = [Reel::class, ChatMessage::class], version = 5, exportSchema = false)
+@Database(entities = [Reel::class, ChatMessage::class], version = 6, exportSchema = false)
 abstract class ReelDatabase : RoomDatabase() { abstract fun dao(): ReelDao; abstract fun chatDao(): ChatDao }
 
 val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -109,6 +110,13 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
         db.execSQL("ALTER TABLE reels ADD COLUMN thumbnailUrl TEXT NOT NULL DEFAULT ''")
         db.execSQL("ALTER TABLE reels ADD COLUMN mediaKind TEXT NOT NULL DEFAULT ''")
         db.execSQL("ALTER TABLE reels ADD COLUMN originalCaption TEXT NOT NULL DEFAULT ''")
+    }
+}
+
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE reels ADD COLUMN manualTitle INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE reels ADD COLUMN extractionDiagnostic TEXT NOT NULL DEFAULT ''")
     }
 }
 
@@ -152,7 +160,7 @@ class ReelModel : ViewModel() {
             try {
                 val databaseDao = withContext(Dispatchers.IO) {
                     Room.databaseBuilder(activity.applicationContext, ReelDatabase::class.java, "reelmind.db")
-                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
+                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build()
                 }
                 dao = databaseDao.dao()
                 chatDao = databaseDao.chatDao()
@@ -197,7 +205,7 @@ class ReelModel : ViewModel() {
                 val result = withContext(Dispatchers.IO) {
                     AiProviders.ask(provider, modelName, apiKey, ollamaUrl,
                         "Tu es un assistant francophone de veille personnelle. N'invente jamais de faits. " +
-                            "Réponds en français, avec un titre court, un résumé clair, 3 à 5 points clés " +
+                            "Réponds en français, avec une première ligne Titre: <titre court de 60 caractères max>, puis un résumé clair, 3 à 5 points clés " +
                             "et 3 à 6 hashtags thématiques. Termine par Catégorie: <nom> parmi ${CategoryStore.list(appContext).joinToString(", " ) { it.name }}. Si le texte est insuffisant, dis-le.",
                         "Source : ${reel.url}\nTexte à résumer :\n${reel.sourceText}")
                 }
@@ -205,7 +213,8 @@ class ReelModel : ViewModel() {
                     .findAll(result).map { it.value }.distinct().take(6).toList()
                 val newCategory = if (reel.category == "À classer") CategoryStore.classifyFromAnswer(result, appContext, result + " " + reel.sourceText) else reel.category
                 val fresh = dao.byId(reel.id) ?: return@launch
-                dao.update(fresh.copy(summary = result,
+                dao.update(fresh.copy(summary = AiTitle.summaryWithoutTitle(result),
+                    title = if (fresh.manualTitle) fresh.title else AiTitle.parse(result).ifBlank { fresh.title },
                     category = if (fresh.category == "À classer") newCategory else fresh.category,
                     processingStatus = "done", processingError = ""))
             } catch (e: Exception) {
@@ -321,8 +330,8 @@ class ReelModel : ViewModel() {
         viewModelScope.launch {
             while (!::dao.isInitialized && isLoading) delay(40)
             if (!::dao.isInitialized) { onResult(false); return@launch }
-            val insertedId = dao.insert(Reel(url = url, title = if (caption.isNotBlank()) CaptionTitle.fromCaption(caption) else "Publication Instagram", sourceText = caption, originalCaption = caption))
-            if (insertedId > 0L && autoProcess) enqueue(insertedId)
+            val insertedId = dao.insert(Reel(url = url, sourceText = caption, originalCaption = caption))
+            if (insertedId > 0L) enqueue(insertedId)
             onResult(insertedId > 0L)
         }
     }
@@ -332,7 +341,7 @@ class ReelModel : ViewModel() {
             while (!::dao.isInitialized && isLoading) kotlinx.coroutines.delay(40)
             if (!::dao.isInitialized) { onResult(false); return@launch }
             val id = dao.insert(Reel(url = url))
-            if (id > 0L && autoProcess) enqueue(id)
+            if (id > 0L) enqueue(id)
             onResult(id > 0L)
         }
     }

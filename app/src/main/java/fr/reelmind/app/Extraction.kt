@@ -13,6 +13,7 @@ import java.net.URL
 data class ExtractSettings(
     val local: Boolean, val render: Boolean, val priority: String, val backend: String,
     val transcription: Boolean, val images: String, val temporary: Boolean,
+    val metadataMethod: String = "auto",
 ) {
     companion object {
         fun load(context: Context): ExtractSettings {
@@ -22,7 +23,8 @@ data class ExtractSettings(
                 prefs.getString("ex_priority", "auto") ?: "auto",
                 prefs.getString("ex_backend", "") ?: "",
                 prefs.getBoolean("ex_audio", true), prefs.getString("ex_images", "gemini") ?: "gemini",
-                prefs.getBoolean("ex_temporary", true)
+                prefs.getBoolean("ex_temporary", true),
+                prefs.getString("ex_metadata_method", "auto") ?: "auto"
             )
         }
     }
@@ -31,7 +33,8 @@ data class ExtractSettings(
 data class ExtractedContent(
     val title: String = "", val caption: String = "", val author: String = "",
     val thumbnail: String = "", val kind: String = "", val audioFile: File? = null,
-    val images: List<File> = emptyList(), val ownedFiles: List<File> = emptyList()
+    val images: List<File> = emptyList(), val ownedFiles: List<File> = emptyList(),
+    val diagnostics: String = ""
 ) {
     fun cleanup() { ownedFiles.forEach { runCatching { it.delete() } } }
 }
@@ -39,22 +42,59 @@ data class ExtractedContent(
 object ExtractionCoordinator {
     fun extract(context: Context, rawUrl: String, settings: ExtractSettings): ExtractedContent {
         val url = validateInstagramUrl(rawUrl)
-        val engines = if (settings.priority == "remote") listOf("remote", "local") else listOf("local", "remote")
-        var lastError = "Aucun moteur disponible"
-        for (engine in engines) {
-            if (engine == "local" && !settings.local || engine == "remote" && !settings.render) continue
-            try {
-                val result = if (engine == "local") LocalExtractor.extract(context, url, settings)
-                    else RenderExtractor.extract(context, url, settings)
-                if (result.caption.isNotBlank() || result.audioFile != null || result.images.isNotEmpty()) return result
-                result.cleanup()
-                lastError = "$engine : aucune ressource récupérée"
-            } catch (e: Exception) { lastError = "$engine : ${e.message}".take(230) }
+        val methods = when (settings.metadataMethod) {
+            "json" -> listOf("json")
+            "local" -> listOf("local")
+            else -> if (settings.priority == "remote") listOf("json", "remote", "local")
+                    else listOf("json", "local", "remote")
         }
-        // Last resort: read genuinely public metadata with no credentials.
-        val caption = runCatching { InstagramPublicMetadata.read(url) }.getOrDefault("")
-        if (caption.isNotBlank()) return ExtractedContent(caption = caption)
-        throw IllegalStateException(lastError)
+        var caption = ""; var author = ""; var thumbnail = ""; var title = ""; var kind = ""
+        var audio: File? = null
+        val images = mutableListOf<File>(); val ownedFiles = mutableListOf<File>()
+        val attempts = mutableListOf<String>()
+        for (method in methods) {
+            if (method == "local" && !settings.local || method == "remote" && !settings.render) continue
+            if (method == "remote" && settings.backend.isBlank()) continue
+            try {
+                // Do not launch yt-dlp merely to duplicate already complete metadata.
+                if (caption.isNotBlank() && author.isNotBlank() && thumbnail.isNotBlank() &&
+                    (audio != null || !settings.transcription || (!settings.local && (!settings.render || settings.backend.isBlank())))) break
+                val result = when (method) {
+                    "json" -> InstagramJsonExtractor.extract(url)
+                    "local" -> LocalExtractor.extract(context, url, settings)
+                    else -> RenderExtractor.extract(context, url, settings)
+                }
+                if (caption.isBlank()) caption = result.caption
+                if (author.isBlank()) author = result.author
+                if (thumbnail.isBlank()) thumbnail = result.thumbnail
+                if (title.isBlank()) title = result.title
+                if (kind.isBlank()) kind = result.kind
+                if (audio == null) audio = result.audioFile
+                images.addAll(result.images)
+                ownedFiles.addAll(result.ownedFiles)
+                attempts.add("$method: légende=${result.caption.isNotBlank()}, auteur=${result.author.isNotBlank()}, image=${result.thumbnail.isNotBlank()}")
+            } catch (e: Exception) {
+                attempts.add("$method: ${e.message.orEmpty().take(110)}")
+            }
+        }
+        // JSON-only limits metadata extraction, but audio can still use local yt-dlp.
+        if (settings.metadataMethod == "json" && settings.transcription && settings.local) {
+            try {
+                val media = LocalExtractor.extract(context, url, settings)
+                audio = media.audioFile
+                images.addAll(media.images)
+                ownedFiles.addAll(media.ownedFiles)
+                attempts.add("audio yt-dlp: ${audio != null}")
+            } catch (e: Exception) { attempts.add("audio yt-dlp: ${e.message.orEmpty().take(100)}") }
+        }
+        if (caption.isBlank()) {
+            val fallback = runCatching { InstagramPublicMetadata.read(url) }.getOrDefault("")
+            if (fallback.isNotBlank()) { caption = fallback; attempts.add("open-graph: légende") }
+        }
+        val diagnostics = attempts.joinToString(" | ").take(600)
+        if (caption.isBlank() && author.isBlank() && thumbnail.isBlank() && audio == null && images.isEmpty())
+            throw IllegalStateException(diagnostics.ifBlank { "Aucune méthode d'extraction disponible" })
+        return ExtractedContent(title, caption, author, thumbnail, kind, audio, images, ownedFiles, diagnostics)
     }
 
     fun validateInstagramUrl(raw: String): String {

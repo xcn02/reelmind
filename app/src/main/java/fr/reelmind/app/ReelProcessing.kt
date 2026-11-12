@@ -37,12 +37,16 @@ class ReelWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val id = inputData.getLong("reel_id", -1L)
         if (id < 0) return@withContext Result.failure()
         val db = Room.databaseBuilder(applicationContext, ReelDatabase::class.java, "reelmind.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
             .build()
         try {
             val dao = db.dao()
             var reel = dao.byId(id) ?: return@withContext Result.success()
-            val prefsExtract = ExtractSettings.load(applicationContext)
+            val autoAiEnabled = applicationContext.getSharedPreferences("settings", 0)
+                .getBoolean("auto_process", true)
+            val prefsExtract = ExtractSettings.load(applicationContext).let { settings ->
+                if (autoAiEnabled) settings else settings.copy(transcription = false, images = "off")
+            }
             if (reel.sourceText.isBlank() || reel.author.isBlank()) {
                 dao.update(reel.copy(processingStatus = "extracting", processingError = ""))
                 var extraction: ExtractedContent? = null
@@ -56,11 +60,13 @@ class ReelWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 if (extraction != null) {
                     val metadata = extraction
                     reel = reel.copy(
-                        title = if (reel.title == "Publication Instagram") CaptionTitle.fromCaption(metadata.caption.ifBlank { reel.originalCaption }) else reel.title,
+                        title = if (!reel.manualTitle && reel.title in setOf("Publication Instagram", "Reel Instagram"))
+                            CaptionTitle.fromCaption(metadata.caption.ifBlank { reel.originalCaption }) else reel.title,
                         author = metadata.author.ifBlank { reel.author },
                         thumbnailUrl = metadata.thumbnail.ifBlank { reel.thumbnailUrl },
                         originalCaption = metadata.caption.ifBlank { reel.originalCaption },
                         mediaKind = metadata.kind.ifBlank { reel.mediaKind },
+                        extractionDiagnostic = metadata.diagnostics,
                         sourceText = listOf(reel.sourceText, metadata.caption).filter { it.isNotBlank() }.distinct().joinToString("\n\n")
                     )
                     dao.update(reel)
@@ -101,15 +107,23 @@ class ReelWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                     metadata.cleanup()
                 }
                 reel = dao.byId(id) ?: return@withContext Result.success()
-                if (reel.sourceText.isBlank()) {
+                if (reel.sourceText.isBlank() && autoAiEnabled) {
                     dao.update(reel.copy(processingStatus = "blocked", processingError =
                         extractionError.ifBlank { "Extraction indisponible. Ajoute la légende ou un média." }))
                     return@withContext Result.success()
                 }
+                if (!reel.manualTitle && reel.title in setOf("Publication Instagram", "Reel Instagram") && reel.originalCaption.isNotBlank()) {
+                    reel = reel.copy(title = CaptionTitle.fromCaption(reel.originalCaption))
+                    dao.update(reel)
+                }
                 if (extractionError.isNotBlank()) dao.update(reel.copy(processingError = extractionError))
             }
             val prefs = applicationContext.getSharedPreferences("settings", 0)
-            if (!prefs.getBoolean("auto_process", true)) return@withContext Result.success()
+            if (!autoAiEnabled) {
+                val current = dao.byId(id) ?: return@withContext Result.success()
+                dao.update(current.copy(processingStatus = "waiting"))
+                return@withContext Result.success()
+            }
             val provider = prefs.getString("provider", "Gemini") ?: "Gemini"
             val defaultModel = when (provider) {
                 "OpenAI" -> "gpt-4o-mini"
@@ -130,7 +144,7 @@ class ReelWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             try {
                 val summary = AiProviders.ask(provider, model, key, ollama,
                     "Tu es ReelMind, assistant francophone. Résume uniquement les faits du texte fourni. " +
-                    "Structure: titre court, résumé, 3 à 5 idées clés, 3 à 6 hashtags et une ligne Catégorie: <nom>. " +
+                    "Structure : première ligne Titre: <titre court de 60 caractères max>, puis Résumé:, 3 à 5 idées clés, 3 à 6 hashtags et une ligne Catégorie: <nom>. " +
                     "Choisis un seul nom de catégorie dans : ${CategoryStore.list(applicationContext).joinToString(", " ) { it.name }}. " +
                     "Mentionne clairement les limites et n'invente jamais le contenu de la vidéo.",
                     "URL: ${reel.url}\nTexte source:\n${reel.sourceText.take(30000)}")
@@ -138,8 +152,11 @@ class ReelWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 val current = dao.byId(id) ?: return@withContext Result.success()
                 val tags = Regex("#[\\p{L}0-9_-]+").findAll(summary).map { it.value }
                     .distinct().take(6).toList()
-                dao.update(current.copy(summary = summary,
-                    title = current.title,
+                val aiTitle = AiTitle.parse(summary)
+                // Never overwrite a manually edited title, even after late AI responses.
+                val effectiveTitle = if (!current.manualTitle && aiTitle.isNotBlank()) aiTitle else current.title
+                dao.update(current.copy(summary = AiTitle.summaryWithoutTitle(summary),
+                    title = effectiveTitle,
                     category = if (prefs.getBoolean("ex_categories", true) && current.category == "À classer" && tags.isNotEmpty())
                         CategoryStore.classifyFromAnswer(summary, applicationContext, summary + " " + current.sourceText) else current.category,
                     processingStatus = "done", processingError = ""))

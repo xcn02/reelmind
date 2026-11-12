@@ -16,6 +16,7 @@ import kotlinx.coroutines.withContext
 fun ExtractionSettingsPanel(activity: ComponentActivity) {
     val prefs = remember { activity.getSharedPreferences("settings", Context.MODE_PRIVATE) }
     var local by remember { mutableStateOf(prefs.getBoolean("ex_local", true)) }
+    var metadataMethod by remember { mutableStateOf(prefs.getString("ex_metadata_method", "auto") ?: "auto") }
     var render by remember { mutableStateOf(prefs.getBoolean("ex_render", true)) }
     var remoteFirst by remember { mutableStateOf(prefs.getString("ex_priority", "auto") == "remote") }
     var backendToken by remember { mutableStateOf(prefs.getString("ex_backend_token", "").orEmpty()) }
@@ -28,6 +29,19 @@ fun ExtractionSettingsPanel(activity: ComponentActivity) {
     fun saveBoolean(key: String, value: Boolean) { prefs.edit().putBoolean(key, value).apply() }
     HorizontalDivider()
     Text("Extraction hybride", style = MaterialTheme.typography.titleLarge)
+    Text("Métadonnées Instagram (légende, auteur, miniature)", style = MaterialTheme.typography.titleMedium)
+    listOf("auto" to "Automatique : JSON puis yt-dlp", "local" to "yt-dlp uniquement (V0.5.1)",
+        "json" to "JSON uniquement").forEach { (value, label) ->
+        Row(Modifier.fillMaxWidth()) {
+            RadioButton(selected = metadataMethod == value, onClick = {
+                metadataMethod = value; prefs.edit().putString("ex_metadata_method", value).apply()
+            })
+            Text(label, modifier = Modifier.padding(top = 12.dp))
+        }
+    }
+    Text("Sans IA. En automatique, les données manquantes sont complétées par les autres méthodes disponibles.",
+        style = MaterialTheme.typography.bodySmall)
+
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text("yt-dlp local", modifier = Modifier.weight(1f))
         Switch(local, onCheckedChange = { local = it; saveBoolean("ex_local", it) })
