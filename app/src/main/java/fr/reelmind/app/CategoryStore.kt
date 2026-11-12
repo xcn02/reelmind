@@ -21,25 +21,35 @@ object CategoryStore {
         ReelCategory("Automobile", "🚗", 0xFF648FBB),
         ReelCategory("Autre", "📁", 0xFF888DA1)
     )
-    fun list(context: Context): List<ReelCategory> {
-        val json = context.getSharedPreferences("settings", 0).getString("categories_custom", "[]").orEmpty()
-        val custom = runCatching {
-            val arr = JSONArray(json)
+    private fun readCustom(context: Context): List<ReelCategory> {
+        val prefs = context.getSharedPreferences("settings", 0)
+        // Legacy installations stored custom additions separately.
+        val raw = prefs.getString("categories_all", null) ?: prefs.getString("categories_custom", "[]").orEmpty()
+        return runCatching {
+            val arr = JSONArray(raw)
             (0 until arr.length()).mapNotNull { i ->
-                val v = arr.optJSONObject(i) ?: return@mapNotNull null
-                ReelCategory(v.optString("name"), v.optString("icon", "📁"), v.optLong("color", 0xFF4285DB))
+                val obj = arr.optJSONObject(i) ?: return@mapNotNull null
+                ReelCategory(obj.optString("name"), obj.optString("icon", "📁"), obj.optLong("color", 0xFF4285DB))
             }.filter { it.name.isNotBlank() }
         }.getOrDefault(emptyList())
-        return (defaults + custom).distinctBy { it.name.lowercase() }
+    }
+    fun list(context: Context): List<ReelCategory> {
+        val prefs = context.getSharedPreferences("settings", 0)
+        return if (prefs.contains("categories_all")) readCustom(context)
+            else (defaults + readCustom(context)).distinctBy { it.name.lowercase() }
+    }
+    fun replaceAll(context: Context, categories: List<ReelCategory>) {
+        val arr = JSONArray()
+        categories.distinctBy { it.name.trim().lowercase() }.forEach { cat ->
+            require(cat.name.isNotBlank() && cat.name.length <= 35)
+            arr.put(JSONObject().put("name", cat.name.trim()).put("icon", cat.icon).put("color", cat.color))
+        }
+        context.getSharedPreferences("settings", 0).edit().putString("categories_all", arr.toString()).apply()
     }
     fun add(context: Context, item: ReelCategory) {
         val current = list(context)
-        require(item.name.isNotBlank() && item.name.length <= 35)
-        if (current.any { it.name.equals(item.name, true) }) return
-        val prefs = context.getSharedPreferences("settings", 0)
-        val arr = JSONArray(prefs.getString("categories_custom", "[]"))
-        arr.put(JSONObject().put("name", item.name.trim()).put("icon", item.icon).put("color", item.color))
-        prefs.edit().putString("categories_custom", arr.toString()).apply()
+        if (current.any { it.name.equals(item.name.trim(), true) }) return
+        replaceAll(context, current + item)
     }
     fun classifyFromAnswer(answer: String, context: Context, fallbackText: String): String {
         val found = Regex("(?im)^\\s*(?:catégorie|categorie)\\s*:\\s*(.+)$").find(answer)?.groupValues?.get(1)?.trim()?.trim('*', '#', ' ', '.')

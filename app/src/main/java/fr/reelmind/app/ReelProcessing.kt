@@ -56,7 +56,7 @@ class ReelWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 if (extraction != null) {
                     val metadata = extraction
                     reel = reel.copy(
-                        title = if (reel.title == "Publication Instagram" && metadata.title.isNotBlank()) metadata.title.take(180) else reel.title,
+                        title = if (reel.title == "Publication Instagram") CaptionTitle.fromCaption(metadata.caption.ifBlank { reel.originalCaption }) else reel.title,
                         author = metadata.author.ifBlank { reel.author },
                         thumbnailUrl = metadata.thumbnail.ifBlank { reel.thumbnailUrl },
                         originalCaption = metadata.caption.ifBlank { reel.originalCaption },
@@ -139,7 +139,7 @@ class ReelWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 val tags = Regex("#[\\p{L}0-9_-]+").findAll(summary).map { it.value }
                     .distinct().take(6).toList()
                 dao.update(current.copy(summary = summary,
-                    title = if (current.title == "Publication Instagram") summary.lineSequence().firstOrNull()?.removePrefix("#")?.trim()?.take(120).orEmpty().ifBlank { current.title } else current.title,
+                    title = current.title,
                     category = if (prefs.getBoolean("ex_categories", true) && current.category == "À classer" && tags.isNotEmpty())
                         CategoryStore.classifyFromAnswer(summary, applicationContext, summary + " " + current.sourceText) else current.category,
                     processingStatus = "done", processingError = ""))
@@ -152,7 +152,15 @@ class ReelWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             }
             Result.success()
         } catch (e: Exception) {
-            Result.retry().takeIf { runAttemptCount < 2 } ?: Result.failure()
+            // Never retry automatically: retrying could consume more AI quota.
+            runCatching {
+                val dao = db.dao()
+                dao.byId(id)?.let { current ->
+                    dao.update(current.copy(processingStatus = "failed",
+                        processingError = "Traitement : ${e.message ?: "Erreur inconnue"}".take(250)))
+                }
+            }
+            Result.success()
         } finally {
             db.close()
         }

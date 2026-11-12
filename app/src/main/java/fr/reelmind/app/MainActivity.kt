@@ -59,6 +59,16 @@ data class Reel(@PrimaryKey(autoGenerate = true) val id: Long = 0, val url: Stri
     @Update suspend fun update(reel: Reel)
     @Delete suspend fun delete(reel: Reel)
     @Query("SELECT * FROM reels WHERE id = :id LIMIT 1") suspend fun byId(id: Long): Reel?
+    // Update only fields changed by the user; keep concurrent worker updates intact.
+    @Query("UPDATE reels SET title = CASE WHEN :changeTitle THEN :title ELSE title END, " +
+        "note = CASE WHEN :changeNote THEN :note ELSE note END, " +
+        "category = CASE WHEN :changeCategory THEN :category ELSE category END, " +
+        "sourceText = CASE WHEN :changeSource THEN :sourceText ELSE sourceText END WHERE id = :id")
+    suspend fun saveEditable(id: Long, title: String, changeTitle: Boolean, note: String, changeNote: Boolean,
+        category: String, changeCategory: Boolean, sourceText: String, changeSource: Boolean)
+    @Query("UPDATE reels SET summary = :summary WHERE id = :id") suspend fun updateSummary(id: Long, summary: String)
+    @Query("UPDATE reels SET category = :newName WHERE category = :oldName") suspend fun renameCategory(oldName: String, newName: String)
+
 }
 @Entity(tableName = "chat_messages", indices = [Index(value = ["reelId"])])
 data class ChatMessage(@PrimaryKey(autoGenerate = true) val id: Long = 0, val reelId: Long,
@@ -194,7 +204,10 @@ class ReelModel : ViewModel() {
                 val extractedTags = Regex("#[\\p{L}0-9_-]+")
                     .findAll(result).map { it.value }.distinct().take(6).toList()
                 val newCategory = if (reel.category == "À classer") CategoryStore.classifyFromAnswer(result, appContext, result + " " + reel.sourceText) else reel.category
-                dao.update(reel.copy(summary = result, category = newCategory, processingStatus = "done", processingError = ""))
+                val fresh = dao.byId(reel.id) ?: return@launch
+                dao.update(fresh.copy(summary = result,
+                    category = if (fresh.category == "À classer") newCategory else fresh.category,
+                    processingStatus = "done", processingError = ""))
             } catch (e: Exception) {
                 aiError = "Résumé impossible : ${e.message ?: "erreur inconnue"}"
             } finally { processingId = null }
@@ -308,7 +321,7 @@ class ReelModel : ViewModel() {
         viewModelScope.launch {
             while (!::dao.isInitialized && isLoading) delay(40)
             if (!::dao.isInitialized) { onResult(false); return@launch }
-            val insertedId = dao.insert(Reel(url = url, sourceText = caption, originalCaption = caption))
+            val insertedId = dao.insert(Reel(url = url, title = if (caption.isNotBlank()) CaptionTitle.fromCaption(caption) else "Publication Instagram", sourceText = caption, originalCaption = caption))
             if (insertedId > 0L && autoProcess) enqueue(insertedId)
             onResult(insertedId > 0L)
         }
@@ -321,6 +334,33 @@ class ReelModel : ViewModel() {
             val id = dao.insert(Reel(url = url))
             if (id > 0L && autoProcess) enqueue(id)
             onResult(id > 0L)
+        }
+    }
+    fun saveEditable(reel: Reel, original: Reel) {
+        if (!::dao.isInitialized) return
+        viewModelScope.launch {
+            dao.saveEditable(reel.id,
+                reel.title, reel.title != original.title,
+                reel.note, reel.note != original.note,
+                reel.category, reel.category != original.category,
+                reel.sourceText, reel.sourceText != original.sourceText)
+        }
+    }
+    fun saveSummary(reel: Reel, summary: String) {
+        if (!::dao.isInitialized) return
+        viewModelScope.launch { dao.updateSummary(reel.id, summary) }
+    }
+    fun changeCategory(oldName: String, newName: String) {
+        if (!::dao.isInitialized) return
+        viewModelScope.launch { dao.renameCategory(oldName, newName) }
+    }
+    fun downloadVideo(reel: Reel, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val message = withContext(Dispatchers.IO) {
+                runCatching { VideoDownload.save(appContext, reel.url) }
+                    .fold(onSuccess = { "Vidéo enregistrée : $it" }, onFailure = { "Téléchargement impossible : ${it.message}" })
+            }
+            onResult(message)
         }
     }
     fun update(reel: Reel) { if (::dao.isInitialized) viewModelScope.launch { dao.update(reel) } }

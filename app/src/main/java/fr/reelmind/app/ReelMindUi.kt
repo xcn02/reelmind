@@ -24,6 +24,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.BackHandler
 import coil.compose.AsyncImage
+import kotlinx.coroutines.delay
 
 private val blue = Color(0xFF397FDD)
 private val paleBlue = Color(0xFF7CB5FF)
@@ -56,6 +57,7 @@ fun ReelMindScreen(vm: ReelModel, activity: MainActivity) {
     LaunchedEffect(vm.pendingUrl) {
         vm.pendingUrl?.let { newUrl = it; newCaption = vm.pendingCaption; showAdd = true; vm.pendingUrl = null; vm.pendingCaption = "" }
     }
+    // The detail composable persists its draft on disposal; returning never loses edits.
     BackHandler(selected != null) { selected = null }
     MaterialTheme(colorScheme = scheme) {
         Scaffold(
@@ -84,14 +86,18 @@ fun ReelMindScreen(vm: ReelModel, activity: MainActivity) {
             Column(Modifier.fillMaxSize().padding(insets).padding(horizontal = 16.dp)) {
                 if (selected != null) {
                     val reel = vm.reels.firstOrNull { it.id == selected!!.id } ?: selected!!
-                    DetailV51(reel, categories, onSave = { vm.update(it); selected = it },
+                    val editBaseline = remember(reel.id) { reel }
+                    DetailV51(reel, categories, onSave = { vm.saveEditable(it, editBaseline) },
+                        onSaveSummary = { vm.saveSummary(reel, it) },
                         onDelete = { vm.remove(reel); selected = null },
                         onSummarize = vm::summarize, busy = vm.processingId == reel.id,
                         onExport = { activity.shareText(exportMarkdown(reel)) }, onOpen = { activity.openUrl(reel.url) },
                         onSpeak = { activity.speak(reel.summary) }, onImport = { mime -> activity.chooseMedia(mime) { uri -> vm.importMedia(reel, uri) } },
                         onRetry = { vm.retry(reel) }, messages = vm.messages, onChatOpen = { vm.observeChat(reel.id) },
                         onAsk = { vm.askReel(reel, it) }, chatBusy = vm.chatAnswering,
-                        onManageCategories = { showCategories = true })
+                        onManageCategories = { showCategories = true },
+                        onShareLink = { activity.shareText(reel.url) },
+                        onDownload = { vm.downloadVideo(reel) { feedback = it } })
                 } else if (tab == 2) {
                     SettingsV51(vm, activity, themePreference, { value -> themePreference = value; prefs.edit().putString("theme", value).apply() }, onManageCategories = { showCategories = true })
                 } else {
@@ -136,7 +142,13 @@ fun ReelMindScreen(vm: ReelModel, activity: MainActivity) {
                 }
             }
         }
-        if (showCategories) CategoryEditor(categories, onDismiss = { showCategories = false }, onAdd = { item -> CategoryStore.add(activity, item); categoryRevision++ })
+        if (showCategories) CategoryManager(categories,
+            onDismiss = { showCategories = false },
+            onChanged = { updated, oldName, newName ->
+                CategoryStore.replaceAll(activity, updated)
+                if (oldName != null && newName != null && oldName != newName) vm.changeCategory(oldName, newName)
+                categoryRevision++
+            })
         if (showChat) AlertDialog(onDismissRequest = { showChat = false }, title = { Text("Question à ma bibliothèque") }, text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Interroge les fiches déjà analysées.")
@@ -283,13 +295,48 @@ fun ReelMindScreen(vm: ReelModel, activity: MainActivity) {
     }
 }
 
-@Composable private fun CategoryEditor(categories: List<ReelCategory>, onDismiss: () -> Unit, onAdd: (ReelCategory) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var icon by remember { mutableStateOf("📁") }
-    var color by remember { mutableStateOf(0xFF4285DBL) }
+@Composable private fun CategoryManager(categories: List<ReelCategory>, onDismiss: () -> Unit,
+    onChanged: (List<ReelCategory>, String?, String?) -> Unit) {
+    var editing by remember { mutableStateOf<ReelCategory?>(null) }
+    var adding by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf<ReelCategory?>(null) }
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Gérer les catégories") }, text = {
+        Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (categories.isEmpty()) Text("Aucune catégorie.")
+            categories.forEach { cat ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(cat.icon, modifier = Modifier.padding(end = 12.dp))
+                    Text(cat.name, modifier = Modifier.weight(1f), maxLines = 1)
+                    IconButton(onClick = { editing = cat }) { Icon(Icons.Default.Edit, "Modifier") }
+                    IconButton(onClick = { deleting = cat }) { Icon(Icons.Default.DeleteOutline, "Supprimer") }
+                }
+            }
+            Button(onClick = { adding = true }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Text("Ajouter une catégorie") }
+        }
+    }, confirmButton = { TextButton(onClick = onDismiss) { Text("Fermer") } })
+    if (adding || editing != null) CategoryEditor(categories, editing, onDismiss = { adding = false; editing = null }) { item ->
+        val old = editing?.name
+        onChanged(if (old == null) categories + item else categories.map { if (it.name == old) item else it }, old, item.name)
+        adding = false; editing = null
+    }
+    deleting?.let { cat ->
+        AlertDialog(onDismissRequest = { deleting = null }, title = { Text("Supprimer ${cat.name} ?") },
+            text = { Text("Les fiches seront conservées et déplacées dans « À classer ».") },
+            confirmButton = { TextButton(onClick = {
+                onChanged(categories.filterNot { it.name == cat.name }, cat.name, "À classer")
+                deleting = null
+            }) { Text("Supprimer") } }, dismissButton = { TextButton(onClick = { deleting = null }) { Text("Annuler") } })
+    }
+}
+
+@Composable private fun CategoryEditor(categories: List<ReelCategory>, original: ReelCategory?, onDismiss: () -> Unit,
+    onSave: (ReelCategory) -> Unit) {
+    var name by remember(original) { mutableStateOf(original?.name.orEmpty()) }
+    var icon by remember(original) { mutableStateOf(original?.icon ?: "📁") }
+    var color by remember(original) { mutableStateOf(original?.color ?: 0xFF4285DBL) }
     val icons = listOf("📁", "📚", "🎯", "💡", "⭐", "⚡", "🔥", "💎", "🏆", "🎨", "🎵", "🎮", "🍕", "✈️", "💪", "💰", "📝", "🔬", "🐾", "🏠", "🚗", "🌿")
     val colors = listOf(0xFF4285DBL, 0xFF18A999L, 0xFF9163D5L, 0xFFE89140L, 0xFFD65C85L, 0xFF36A66BL)
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("Ajouter une catégorie") }, text = {
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(if (original == null) "Ajouter une catégorie" else "Modifier la catégorie") }, text = {
         Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(icon, style = MaterialTheme.typography.displayMedium, modifier = Modifier.align(Alignment.CenterHorizontally))
             OutlinedTextField(name, { name = it.take(35) }, modifier = Modifier.fillMaxWidth(), label = { Text("Nom de la catégorie") })
@@ -303,20 +350,21 @@ fun ReelMindScreen(vm: ReelModel, activity: MainActivity) {
             Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                 colors.forEach { value -> Box(Modifier.size(34.dp).background(Color(value), RoundedCornerShape(30.dp)).clickable { color = value }, contentAlignment = Alignment.Center) { if (color == value) Icon(Icons.Default.Check, null, tint = Color.White) } }
             }
-            Text("${categories.size} catégories disponibles", style = MaterialTheme.typography.bodySmall)
         }
-    }, confirmButton = { Button(onClick = { onAdd(ReelCategory(name.trim(), icon, color)); onDismiss() }, enabled = name.isNotBlank() && categories.none { it.name.equals(name.trim(), true) }) { Text("Ajouter") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } })
+    }, confirmButton = { Button(onClick = { onSave(ReelCategory(name.trim(), icon, color)) }, enabled = name.isNotBlank() && categories.none { it.name.equals(name.trim(), true) && it.name != original?.name }) { Text("Enregistrer") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } })
 }
 
-@Composable private fun DetailV51(reel: Reel, categories: List<ReelCategory>, onSave: (Reel) -> Unit, onDelete: () -> Unit,
+@Composable private fun DetailV51(reel: Reel, categories: List<ReelCategory>, onSave: (Reel) -> Unit,
+    onSaveSummary: (String) -> Unit, onDelete: () -> Unit,
     onSummarize: (Reel) -> Unit, busy: Boolean, onExport: () -> Unit, onOpen: () -> Unit, onSpeak: () -> Unit,
     onImport: (String) -> Unit, onRetry: () -> Unit, messages: List<ChatMessage>, onChatOpen: () -> Unit,
-    onAsk: (String) -> Unit, chatBusy: Boolean, onManageCategories: () -> Unit) {
-    var title by remember(reel.id, reel.title) { mutableStateOf(reel.title) }
-    var category by remember(reel.id, reel.category) { mutableStateOf(reel.category) }
-    var note by remember(reel.id, reel.note) { mutableStateOf(reel.note) }
-    var source by remember(reel.id, reel.sourceText) { mutableStateOf(reel.sourceText) }
-    var summary by remember(reel.id, reel.summary) { mutableStateOf(reel.summary) }
+    onAsk: (String) -> Unit, chatBusy: Boolean, onManageCategories: () -> Unit,
+    onShareLink: () -> Unit, onDownload: () -> Unit) {
+    var title by remember(reel.id) { mutableStateOf(reel.title) }
+    var category by remember(reel.id) { mutableStateOf(reel.category) }
+    var note by remember(reel.id) { mutableStateOf(reel.note) }
+    var source by remember(reel.id) { mutableStateOf(reel.sourceText) }
+    var summary by remember(reel.id) { mutableStateOf(reel.summary) }
     var captionExpanded by remember { mutableStateOf(false) }
     var transcriptExpanded by remember { mutableStateOf(false) }
     var sourceExpanded by remember { mutableStateOf(false) }
@@ -324,10 +372,36 @@ fun ReelMindScreen(vm: ReelModel, activity: MainActivity) {
     var question by remember { mutableStateOf("") }
     var confirmDelete by remember { mutableStateOf(false) }
     var mediaMenu by remember { mutableStateOf(false) }
+    val latestSave by rememberUpdatedState(onSave)
+    val draft = reel.copy(title = title, note = note, category = category, sourceText = source)
+    LaunchedEffect(reel.id, title, note, category, source) {
+        if (title != reel.title || note != reel.note || category != reel.category || source != reel.sourceText) {
+            delay(550)
+            latestSave(draft)
+        }
+    }
+    val lastDraft by rememberUpdatedState(draft)
+    DisposableEffect(reel.id) {
+        onDispose {
+            if (lastDraft.title != reel.title || lastDraft.note != reel.note || lastDraft.category != reel.category || lastDraft.sourceText != reel.sourceText)
+                latestSave(lastDraft)
+        }
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (reel.thumbnailUrl.startsWith("https://")) AsyncImage(reel.thumbnailUrl, "Miniature", Modifier.fillMaxWidth().height(205.dp), contentScale = ContentScale.Crop)
         OutlinedTextField(title, { title = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Titre") })
         Text(reel.author.ifBlank { "Instagram" }, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = onDownload, modifier = Modifier.weight(1f), contentPadding = PaddingValues(5.dp)) {
+                Icon(Icons.Default.Download, null, Modifier.size(18.dp)); Text("Télécharger", maxLines = 1, style = MaterialTheme.typography.labelSmall)
+            }
+            OutlinedButton(onClick = onShareLink, modifier = Modifier.weight(1f), contentPadding = PaddingValues(5.dp)) {
+                Icon(Icons.Default.Share, null, Modifier.size(18.dp)); Text("Partager", maxLines = 1, style = MaterialTheme.typography.labelSmall)
+            }
+            OutlinedButton(onClick = onOpen, modifier = Modifier.weight(1f), contentPadding = PaddingValues(5.dp)) {
+                Icon(Icons.Default.OpenInNew, null, Modifier.size(18.dp)); Text("Instagram", maxLines = 1, style = MaterialTheme.typography.labelSmall)
+            }
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) { ChoiceMenu(category, listOf("À classer") + categories.map { it.name }) { category = it } }
             IconButton(onClick = onManageCategories) { Icon(Icons.Default.AddCircleOutline, "Créer une catégorie") }
@@ -337,9 +411,11 @@ fun ReelMindScreen(vm: ReelModel, activity: MainActivity) {
         HorizontalDivider()
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Analyse", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-            Text(when (reel.processingStatus) { "done" -> "Terminée"; "failed" -> "Échec"; "extracting" -> "Extraction…"; "summarizing" -> "En cours…"; else -> "En attente" }, style = MaterialTheme.typography.labelMedium)
+            Text(when (reel.processingStatus) { "done" -> "Terminée"; "failed" -> "Échec"; "extracting" -> "Extraction…"; "summarizing" -> "Résumé IA…"; "blocked" -> "Extraction / configuration"; else -> "En attente" }, style = MaterialTheme.typography.labelMedium)
         }
         if (reel.processingError.isNotBlank()) Text(reel.processingError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        if (reel.originalCaption.isNotBlank()) Text("Légende extraite", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (reel.mediaText.isNotBlank()) Text("Transcription disponible", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Ajoute une image, un audio ou une vidéo pour compléter l'analyse. Le fichier temporaire sera supprimé après traitement.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onRetry, modifier = Modifier.weight(1f)) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(4.dp)); Text("Réanalyser") }
@@ -364,13 +440,13 @@ fun ReelMindScreen(vm: ReelModel, activity: MainActivity) {
         if (sourceExpanded) {
             OutlinedTextField(source, { source = it }, modifier = Modifier.fillMaxWidth(), minLines = 4)
             OutlinedTextField(summary, { summary = it }, modifier = Modifier.fillMaxWidth(), minLines = 3, label = { Text("Corriger le résumé") })
+            if (summary != reel.summary) Button(onClick = { onSaveSummary(summary) }) { Text("Enregistrer le résumé corrigé") }
             Button(onClick = { onSummarize(reel.copy(title = title, category = category, sourceText = source)) }, enabled = source.isNotBlank() && !busy) { Text("Générer le résumé") }
         }
         HorizontalDivider()
         Text("Mes notes", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         OutlinedTextField(note, { note = it }, placeholder = { Text("Ajouter une remarque personnelle…") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
-        Button(onClick = { onSave(reel.copy(title = title, category = category, note = note, sourceText = source, summary = summary)) }, modifier = Modifier.fillMaxWidth()) { Text("Enregistrer les modifications") }
-        OutlinedButton(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Text("Voir la publication originale") }
+        Text("Modifications enregistrées automatiquement", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (reel.summary.isNotBlank()) OutlinedButton(onClick = onSpeak, modifier = Modifier.fillMaxWidth()) { Text("Écouter le résumé") }
         OutlinedButton(onClick = { chatExpanded = !chatExpanded; if (chatExpanded) onChatOpen() }, modifier = Modifier.fillMaxWidth()) { Text(if (chatExpanded) "Masquer la discussion" else "Discuter avec ce Reel") }
         if (chatExpanded) {
