@@ -20,10 +20,8 @@ fun ExtractionSettingsPanel(activity: ComponentActivity) {
     var remoteFirst by remember { mutableStateOf(prefs.getString("ex_priority", "auto") == "remote") }
     var backendToken by remember { mutableStateOf(prefs.getString("ex_backend_token", "").orEmpty()) }
     var endpoint by remember { mutableStateOf(prefs.getString("ex_backend", "").orEmpty()) }
-    var transcribe by remember { mutableStateOf(prefs.getBoolean("ex_audio", true)) }
     var images by remember { mutableStateOf(prefs.getString("ex_images", "gemini") ?: "gemini") }
     var categoryAuto by remember { mutableStateOf(prefs.getBoolean("ex_categories", true)) }
-    var temporary by remember { mutableStateOf(prefs.getBoolean("ex_temporary", true)) }
     var updateStatus by remember { mutableStateOf("") }
     var updating by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -62,12 +60,7 @@ fun ExtractionSettingsPanel(activity: ComponentActivity) {
     }, modifier = Modifier.fillMaxWidth()) { Text(if (updating) "Mise à jour en cours" else "Mettre yt-dlp à jour") }
     if (updateStatus.isNotBlank()) Text(updateStatus, style = MaterialTheme.typography.bodySmall)
     HorizontalDivider()
-    Text("Traitement des médias", style = MaterialTheme.typography.titleMedium)
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text("Transcription audio (Groq)", modifier = Modifier.weight(1f))
-        Switch(transcribe, onCheckedChange = { transcribe = it; saveBoolean("ex_audio", it) })
-    }
-    Text("La transcription automatique utilise la clé Groq. Sans clé Groq, seule la légende est résumée.", style = MaterialTheme.typography.bodySmall)
+    Text("Analyse visuelle", style = MaterialTheme.typography.titleMedium)
     Text("Images et carrousels")
     listOf("gemini" to "Gemini Vision", "off" to "Désactivé").forEach { (value, label) ->
         Row(Modifier.fillMaxWidth()) {
@@ -76,12 +69,8 @@ fun ExtractionSettingsPanel(activity: ComponentActivity) {
         }
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text("Supprimer les médias temporaires", modifier = Modifier.weight(1f))
-        Switch(temporary, onCheckedChange = { temporary = it; saveBoolean("ex_temporary", it) })
-    }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text("Catégories automatiques", modifier = Modifier.weight(1f))
         Switch(categoryAuto, onCheckedChange = { categoryAuto = it; saveBoolean("ex_categories", it) })
     }
-    Text("Le mode local utilise le stockage temporaire interne ; les fichiers de traitement sont supprimés après analyse.", style = MaterialTheme.typography.bodySmall)
+    Text("Les fichiers temporaires sont supprimés après analyse.", style = MaterialTheme.typography.bodySmall)
 }

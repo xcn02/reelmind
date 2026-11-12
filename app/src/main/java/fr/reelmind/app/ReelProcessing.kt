@@ -64,13 +64,19 @@ class ReelWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                         sourceText = listOf(reel.sourceText, metadata.caption).filter { it.isNotBlank() }.distinct().joinToString("\n\n")
                     )
                     dao.update(reel)
-                    if (prefsExtract.transcription && metadata.audioFile != null) {
+                    if (prefsExtract.transcription && metadata.audioFile != null && applicationContext.getSharedPreferences("settings", 0).getString("ex_audio_provider", "Groq") != "Désactivée") {
                         try {
                             val groqKey = applicationContext.getSharedPreferences("settings", 0)
                                 .getString("key_Groq", "").orEmpty()
-                            val transcript = if (groqKey.isNotBlank())
-                                GroqWhisper.transcribe(metadata.audioFile, groqKey)
-                            else ""
+                            val transcript = when (applicationContext.getSharedPreferences("settings", 0).getString("ex_audio_provider", "Groq")) {
+                                "Groq" -> if (groqKey.isNotBlank()) GroqWhisper.transcribe(metadata.audioFile, groqKey) else ""
+                                "Gemini" -> {
+                                    val geminiKey = applicationContext.getSharedPreferences("settings", 0).getString("key_Gemini", "").orEmpty()
+                                    val audioModel = applicationContext.getSharedPreferences("settings", 0).getString("gemini_audio_model", "gemini-3.5-transcribe").orEmpty()
+                                    GeminiFileAudio.transcribe(metadata.audioFile, geminiKey, audioModel)
+                                }
+                                else -> ""
+                            }
                             if (transcript.isNotBlank()) {
                                 reel = (dao.byId(id) ?: reel).copy(
                                     mediaText = transcript,
@@ -85,7 +91,7 @@ class ReelWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                             val geminiKey = applicationContext.getSharedPreferences("settings", 0)
                                 .getString("key_Gemini", "").orEmpty()
                             if (geminiKey.isNotBlank()) {
-                                val imageText = GeminiImages.describe(metadata.images, geminiKey)
+                                val imageText = GeminiImages.describe(metadata.images, geminiKey, applicationContext.getSharedPreferences("settings", 0).getString("gemini_image_model", "gemini-3.5-flash-lite").orEmpty())
                                 reel = (dao.byId(id) ?: reel).copy(sourceText = listOf(reel.sourceText,
                                     "Analyse des images :\n$imageText").filter { it.isNotBlank() }.joinToString("\n\n"))
                                 dao.update(reel)
@@ -109,9 +115,10 @@ class ReelWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 "OpenAI" -> "gpt-4o-mini"
                 "Groq" -> "llama-3.3-70b-versatile"
                 "Ollama" -> "llama3.2"
-                else -> "gemini-2.5-flash"
+                else -> "gemini-3.5-flash-lite"
             }
-            val model = prefs.getString("model_$provider", defaultModel) ?: defaultModel
+            val storedModel = prefs.getString("model_$provider", defaultModel) ?: defaultModel
+            val model = if (provider == "Gemini" && storedModel == "gemini-2.5-flash") "gemini-3.5-flash-lite" else storedModel
             val key = prefs.getString("key_$provider", "") ?: ""
             val ollama = prefs.getString("ollama_url", "") ?: ""
             if (provider != "Ollama" && key.isBlank()) {
@@ -123,7 +130,8 @@ class ReelWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             try {
                 val summary = AiProviders.ask(provider, model, key, ollama,
                     "Tu es ReelMind, assistant francophone. Résume uniquement les faits du texte fourni. " +
-                    "Structure: titre court, résumé, 3 à 5 idées clés, 3 à 6 hashtags. " +
+                    "Structure: titre court, résumé, 3 à 5 idées clés, 3 à 6 hashtags et une ligne Catégorie: <nom>. " +
+                    "Choisis un seul nom de catégorie dans : ${CategoryStore.list(applicationContext).joinToString(", " ) { it.name }}. " +
                     "Mentionne clairement les limites et n'invente jamais le contenu de la vidéo.",
                     "URL: ${reel.url}\nTexte source:\n${reel.sourceText.take(30000)}")
                 // Fetch the latest row, to avoid overwriting user edits made while processing.
@@ -133,7 +141,7 @@ class ReelWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 dao.update(current.copy(summary = summary,
                     title = if (current.title == "Publication Instagram") summary.lineSequence().firstOrNull()?.removePrefix("#")?.trim()?.take(120).orEmpty().ifBlank { current.title } else current.title,
                     category = if (prefs.getBoolean("ex_categories", true) && current.category == "À classer" && tags.isNotEmpty())
-                        tags.joinToString(" ") else current.category,
+                        CategoryStore.classifyFromAnswer(summary, applicationContext, summary + " " + current.sourceText) else current.category,
                     processingStatus = "done", processingError = ""))
                 notifyUser("Résumé prêt", "Ta fiche est prête dans ReelMind", id.toInt())
             } catch (e: Exception) {

@@ -25,7 +25,7 @@ object GroqWhisper {
                 }
                 part("model", "whisper-large-v3-turbo")
                 part("response_format", "json")
-                out.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.mp3\"\r\nContent-Type: audio/mpeg\r\n\r\n".toByteArray())
+                out.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.${file.extension.lowercase()}\"\r\nContent-Type: audio/${if (file.extension.lowercase() == "mp3") "mpeg" else "mp4"}\r\n\r\n".toByteArray())
                 file.inputStream().use { it.copyTo(out) }
                 out.write("\r\n--$boundary--\r\n".toByteArray())
             }
@@ -40,7 +40,7 @@ object GroqWhisper {
 
 /** Carousel/screenshots, downsampled by the server or Android caller before calling Gemini. */
 object GeminiImages {
-    fun describe(images: List<File>, apiKey: String): String {
+    fun describe(images: List<File>, apiKey: String, model: String = "gemini-3.5-flash-lite"): String {
         require(apiKey.isNotBlank()) { "Clé Gemini nécessaire" }
         val parts = JSONArray().put(JSONObject().put("text", "Analyse ces images dans l'ordre. En français, extrais tout texte utile, puis explique les diagrammes, étapes et informations visuelles. N'invente rien. Ne répète pas la légende."))
         for (file in images.take(8)) {
@@ -53,7 +53,7 @@ object GeminiImages {
         }
         val request = JSONObject().put("contents", JSONArray().put(JSONObject()
             .put("role", "user").put("parts", parts)))
-        val conn = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent")
+        val conn = URL("https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent")
             .openConnection() as HttpURLConnection
         try {
             conn.requestMethod = "POST"; conn.connectTimeout = 15000; conn.readTimeout = 120000; conn.doOutput = true

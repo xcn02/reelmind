@@ -109,7 +109,7 @@ class ReelModel : ViewModel() {
     var libraryAnswer by mutableStateOf(""); private set
     var libraryAsking by mutableStateOf(false); private set
     var provider by mutableStateOf("Gemini")
-    var modelName by mutableStateOf("gemini-2.5-flash")
+    var modelName by mutableStateOf("gemini-3.5-flash-lite")
     var ollamaUrl by mutableStateOf("")
     var messages by mutableStateOf<List<ChatMessage>>(emptyList()); private set
     var chatAnswering by mutableStateOf(false); private set
@@ -130,7 +130,11 @@ class ReelModel : ViewModel() {
         // Preferences are lightweight; database creation/first observation happen off the UI thread.
         val prefs = activity.getSharedPreferences("settings", 0)
         provider = prefs.getString("provider", "Gemini") ?: "Gemini"
-        modelName = prefs.getString("model", "gemini-2.5-flash") ?: "gemini-2.5-flash"
+        modelName = prefs.getString("model_$provider", "gemini-3.5-flash-lite") ?: "gemini-3.5-flash-lite"
+        if (modelName == "gemini-2.5-flash" && provider == "Gemini") {
+            modelName = "gemini-3.5-flash-lite"
+            prefs.edit().putString("model_Gemini", modelName).apply()
+        }
         apiKey = prefs.getString("key_$provider", prefs.getString("gemini_api_key", "")) ?: ""
         ollamaUrl = prefs.getString("ollama_url", "") ?: ""
         autoProcess = prefs.getBoolean("auto_process", true)
@@ -154,11 +158,15 @@ class ReelModel : ViewModel() {
         val prefs = activity.getSharedPreferences("settings", 0)
         apiKey = prefs.getString("key_$value", "") ?: ""
         modelName = prefs.getString("model_$value", defaultModel(value)) ?: defaultModel(value)
+        if (value == "Gemini" && modelName == "gemini-2.5-flash") {
+            modelName = defaultModel(value)
+            prefs.edit().putString("model_Gemini", modelName).apply()
+        }
         prefs.edit().putString("provider", value).apply()
     }
     private fun defaultModel(value: String) = when(value) {
         "OpenAI" -> "gpt-4o-mini"; "Groq" -> "llama-3.3-70b-versatile"
-        "Ollama" -> "llama3.2"; else -> "gemini-2.5-flash"
+        "Ollama" -> "llama3.2"; else -> "gemini-3.5-flash-lite"
     }
     fun saveModel(activity: ComponentActivity, value: String) { modelName = value; activity.getSharedPreferences("settings", 0).edit().putString("model_$provider", value).apply() }
     fun saveOllamaUrl(activity: ComponentActivity, value: String) {
@@ -180,13 +188,12 @@ class ReelModel : ViewModel() {
                     AiProviders.ask(provider, modelName, apiKey, ollamaUrl,
                         "Tu es un assistant francophone de veille personnelle. N'invente jamais de faits. " +
                             "Réponds en français, avec un titre court, un résumé clair, 3 à 5 points clés " +
-                            "et 3 à 6 hashtags thématiques. Si le texte est insuffisant, dis-le.",
+                            "et 3 à 6 hashtags thématiques. Termine par Catégorie: <nom> parmi ${CategoryStore.list(appContext).joinToString(", " ) { it.name }}. Si le texte est insuffisant, dis-le.",
                         "Source : ${reel.url}\nTexte à résumer :\n${reel.sourceText}")
                 }
                 val extractedTags = Regex("#[\\p{L}0-9_-]+")
                     .findAll(result).map { it.value }.distinct().take(6).toList()
-                val newCategory = if (reel.category == "À classer" && extractedTags.isNotEmpty())
-                    extractedTags.joinToString(" ") else reel.category
+                val newCategory = if (reel.category == "À classer") CategoryStore.classifyFromAnswer(result, appContext, result + " " + reel.sourceText) else reel.category
                 dao.update(reel.copy(summary = result, category = newCategory, processingStatus = "done", processingError = ""))
             } catch (e: Exception) {
                 aiError = "Résumé impossible : ${e.message ?: "erreur inconnue"}"
@@ -272,19 +279,19 @@ class ReelModel : ViewModel() {
                         try {
                             appContext.contentResolver.openInputStream(uri)?.use { input -> file.outputStream().use { input.copyTo(it) } }
                             val key = appContext.getSharedPreferences("settings", 0).getString("key_Gemini", "").orEmpty()
-                            "Analyse d'image :\n" + GeminiImages.describe(listOf(file), key)
+                            "Analyse d'image :\n" + GeminiImages.describe(listOf(file), key, appContext.getSharedPreferences("settings", 0).getString("gemini_image_model", "gemini-3.5-flash-lite").orEmpty())
                         } finally { file.delete() }
                     } else {
                         val groqKey = appContext.getSharedPreferences("settings", 0).getString("key_Groq", "").orEmpty()
                         val mime = appContext.contentResolver.getType(uri).orEmpty()
-                        if (mime.startsWith("audio/") && groqKey.isNotBlank()) {
+                        if (mime.startsWith("audio/") && appContext.getSharedPreferences("settings", 0).getString("ex_audio_provider", "Groq") == "Groq" && groqKey.isNotBlank()) {
                             val ext = if (mime.contains("mpeg") || mime.contains("mp3")) ".mp3" else ".m4a"
                             val file = java.io.File.createTempFile("reelmind_upload_", ext, appContext.cacheDir)
                             try {
                                 appContext.contentResolver.openInputStream(uri)?.use { input -> file.outputStream().use { input.copyTo(it) } }
                                 GroqWhisper.transcribe(file, groqKey)
                             } finally { file.delete() }
-                        } else MediaTranscriber.transcribe(appContext, uri, apiKey, provider)
+                        } else MediaTranscriber.transcribe(appContext, uri, appContext.getSharedPreferences("settings", 0).getString("key_Gemini", "").orEmpty(), "Gemini", appContext.getSharedPreferences("settings", 0).getString("gemini_audio_model", "gemini-3.5-transcribe").orEmpty())
                     }
                 }
                 val fresh = dao.byId(reel.id) ?: return@launch
@@ -352,9 +359,9 @@ class MainActivity : ComponentActivity() {
     private val mediaPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) mediaImportHandler?.invoke(uri)
     }
-    fun chooseMedia(onPicked: (Uri) -> Unit) {
+    fun chooseMedia(mime: String, onPicked: (Uri) -> Unit) {
         mediaImportHandler = onPicked
-        mediaPicker.launch(arrayOf("audio/*", "video/*", "image/*"))
+        mediaPicker.launch(arrayOf(mime))
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -374,195 +381,6 @@ class MainActivity : ComponentActivity() {
         return SharedReel(url, caption)
     }
 
-}
-
-private val purple = Color(0xFFB59BFF)
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable fun ReelMindScreen(vm: ReelModel, activity: MainActivity) {
-    var tab by remember { mutableIntStateOf(0) }
-    var search by remember { mutableStateOf("") }
-    var categoryFilter by remember { mutableStateOf("Tout") }
-    var selected by remember { mutableStateOf<Reel?>(null) }
-    var newUrl by remember { mutableStateOf("") }
-    var newCaption by remember { mutableStateOf("") }
-    var showAdd by remember { mutableStateOf(false) }
-    var feedback by remember { mutableStateOf("") }
-    var showLibraryChat by remember { mutableStateOf(false) }
-    var libraryQuestion by remember { mutableStateOf("") }
-
-    val snack = remember { SnackbarHostState() }
-    LaunchedEffect(vm.aiError) { vm.aiError?.let { snack.showSnackbar(it); vm.aiError = null } }
-    LaunchedEffect(feedback) { if (feedback.isNotEmpty()) { snack.showSnackbar(feedback); feedback = "" } }
-    LaunchedEffect(vm.pendingUrl) { if (vm.pendingUrl != null) { newUrl = vm.pendingUrl!!; newCaption = vm.pendingCaption; showAdd = true; vm.pendingUrl = null; vm.pendingCaption = "" } }
-    BackHandler(selected != null) { selected = null }
-    MaterialTheme(colorScheme = darkColorScheme(primary = purple, background = Color(0xFF111117), surface = Color(0xFF1C1B24))) {
-        Scaffold(snackbarHost = { SnackbarHost(snack) }, topBar = { TopAppBar(title = { Text(if (selected == null) "ReelMind" else "Fiche enregistrée", fontWeight = FontWeight.Bold) }, navigationIcon = { if (selected != null) IconButton(onClick = { selected = null }) { Icon(Icons.Default.ArrowBack, "Retour") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF111117))) }, bottomBar = { if (selected == null) NavigationBar { listOf(Triple("Bibliothèque", Icons.Default.CollectionsBookmark, 0), Triple("Favoris", Icons.Default.Favorite, 1), Triple("Réglages", Icons.Default.Settings, 2)).forEach { (name, icon, index) -> NavigationBarItem(selected = tab == index, onClick = { tab = index }, icon = { Icon(icon, name) }, label = { Text(name) }) } } }, floatingActionButton = { if (selected == null && tab != 2) FloatingActionButton(onClick = { newUrl = ""; newCaption = ""; showAdd = true }) { Icon(Icons.Default.Add, "Ajouter") } }) { padding ->
-            Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)) {
-                if (selected != null) {
-                    val current = vm.reels.find { it.id == selected!!.id } ?: selected!!
-                    Detail(current, onSave = { vm.update(it); selected = it }, onDelete = { vm.remove(current); selected = null },
-                        onSummarize = { vm.summarize(it) }, isProcessing = vm.processingId == current.id,
-                        onExport = { activity.shareText(exportMarkdown(current)) }, onOpen = { activity.openUrl(current.url) },
-                        onSpeak = { activity.speak(current.summary) }, onImportMedia = { activity.chooseMedia { uri -> vm.importMedia(current, uri) } },
-                        onRetry = { vm.retry(current) }, messages = vm.messages,
-                        onChatOpen = { vm.observeChat(current.id) }, onAsk = { vm.askReel(current, it) }, chatAnswering = vm.chatAnswering)
-                } else if (tab == 2) {
-                    Text("Moteur IA", style = MaterialTheme.typography.titleLarge)
-                    Spacer(Modifier.height(8.dp))
-                    Text("Le partage déclenche une tentative d’extraction publique. Si Instagram bloque l’accès, importe la légende ou un fichier audio/vidéo. Aucun contournement de connexion.")
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Traitement automatique", modifier = Modifier.weight(1f))
-                        Switch(checked = vm.autoProcess, onCheckedChange = { vm.saveAutoProcess(activity, it) })
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    ExtractionSettingsPanel(activity)
-                    Spacer(Modifier.height(16.dp))
-                    var expanded by remember { mutableStateOf(false) }
-                    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
-                        OutlinedTextField(vm.provider, {}, readOnly = true, label = { Text("Fournisseur") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) }, modifier = Modifier.menuAnchor().fillMaxWidth())
-                        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) { listOf("Gemini", "Groq", "OpenAI", "Ollama").forEach { item -> DropdownMenuItem(text = { Text(item) }, onClick = { vm.saveProvider(activity, item); expanded = false }) } }
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(vm.modelName, { vm.saveModel(activity, it) }, label = { Text("Identifiant du modèle") }, modifier = Modifier.fillMaxWidth())
-                    Spacer(Modifier.height(12.dp))
-                    var showKey by remember { mutableStateOf(false) }
-                    if (vm.provider != "Ollama") OutlinedTextField(vm.apiKey, { vm.saveApiKey(activity, it) }, label = { Text("Clé API ${vm.provider}") },
-                        visualTransformation = if (showKey) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                        trailingIcon = { TextButton(onClick = { showKey = !showKey }) { Text(if (showKey) "Masquer" else "Voir") } },
-                        modifier = Modifier.fillMaxWidth())
-                    if (vm.provider == "Ollama") {
-                        OutlinedTextField(vm.ollamaUrl, { vm.saveOllamaUrl(activity, it) },
-                            label = { Text("Adresse HTTPS du serveur Ollama") }, modifier = Modifier.fillMaxWidth())
-                    }
-                    Text("Les imports manuels sont traités selon le fichier. Les médias extraits automatiquement peuvent être envoyés à Groq ou Gemini selon tes réglages.", style = MaterialTheme.typography.bodySmall)
-                    Text("Les clés API sont stockées localement sans chiffrement dédié. Ne les partage pas. " +
-                        "Les appels IA envoient le texte de tes fiches au fournisseur choisi.",
-                        style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedButton(onClick = { activity.requestNotifications() }, modifier = Modifier.fillMaxWidth()) { Text("Activer les notifications") }
-                    OutlinedButton(onClick = { vm.requeueUnfinished() }, modifier = Modifier.fillMaxWidth()) { Text("Retenter les fiches sans résumé") }
-                    OutlinedButton(onClick = { activity.shareText(exportLibraryMarkdown(vm.reels)) }, modifier = Modifier.fillMaxWidth()) { Text("Exporter toute la bibliothèque (Markdown)") }
-                } else {
-                    Text(if (tab == 0) "Ta bibliothèque intelligente" else "Tes favoris", style = MaterialTheme.typography.titleLarge)
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedButton(onClick = { showLibraryChat = true }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Poser une question sur ma bibliothèque")
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(search, { search = it }, label = { Text("Rechercher un titre, une note, un tag…") }, leadingIcon = { Icon(Icons.Default.Search, null) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    Spacer(Modifier.height(8.dp))
-                    val categories = vm.reels.map { it.category }.filter { it.isNotBlank() }
-                        .distinct().take(12)
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(listOf("Tout") + categories) { cat ->
-                            FilterChip(selected = categoryFilter == cat, onClick = { categoryFilter = cat },
-                                label = { Text(cat, maxLines = 1) })
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    val shown = vm.reels.filter {
-                        (tab != 1 || it.favorite) && (categoryFilter == "Tout" || it.category == categoryFilter) &&
-                            (it.title.contains(search, true) || it.summary.contains(search, true) ||
-                            it.note.contains(search, true) || it.category.contains(search, true) ||
-                            it.sourceText.contains(search, true) || it.url.contains(search, true))
-                    }
-                    if (vm.isLoading) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.width(12.dp))
-                            Text("Chargement de la bibliothèque…")
-                        }
-                    } else if (shown.isEmpty()) Text("Aucune publication. Partage un lien Instagram vers ReelMind ou appuie sur +.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) { items(shown, key = { it.id }) { reel -> Card(onClick = { selected = reel }, modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { if (reel.thumbnailUrl.startsWith("https://")) AsyncImage(model = reel.thumbnailUrl, contentDescription = "Miniature", modifier = Modifier.fillMaxWidth().height(145.dp), contentScale = ContentScale.Crop); Row(verticalAlignment = Alignment.CenterVertically) { Text(reel.title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 2); IconButton(onClick = { vm.update(reel.copy(favorite = !reel.favorite)) }) { Icon(if (reel.favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, "Favori", tint = if (reel.favorite) purple else MaterialTheme.colorScheme.onSurfaceVariant) } }; Text(reel.category, color = purple); Spacer(Modifier.height(6.dp)); Text(reel.summary.ifBlank { when(reel.processingStatus) { "blocked" -> "Contenu inaccessible : ajouter un texte ou fichier"; "extracting" -> "Récupération en cours…"; "summarizing" -> "Résumé en cours…"; "failed" -> "Échec du traitement"; else -> "Enregistré · Résumé en attente" } }, maxLines = 3, overflow = TextOverflow.Ellipsis); Spacer(Modifier.height(6.dp)); Text(reel.url, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) } } } }
-                }
-            }
-        }
-        if (showLibraryChat) AlertDialog(onDismissRequest = { showLibraryChat = false },
-            title = { Text("Question à la bibliothèque") },
-            text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Interroge jusqu'à 25 fiches avec texte ou résumé. Leur contenu est envoyé au fournisseur IA choisi.", style = MaterialTheme.typography.bodySmall)
-                OutlinedTextField(libraryQuestion, { libraryQuestion = it }, label = { Text("Ta question") }, modifier = Modifier.fillMaxWidth())
-                if (vm.libraryAsking) CircularProgressIndicator(Modifier.size(24.dp))
-                if (vm.libraryAnswer.isNotBlank()) Text(vm.libraryAnswer, modifier = Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState()))
-            } },
-            confirmButton = { TextButton(onClick = { vm.askLibrary(libraryQuestion) }, enabled = libraryQuestion.isNotBlank() && !vm.libraryAsking) { Text("Interroger") } },
-            dismissButton = { TextButton(onClick = { showLibraryChat = false }) { Text("Fermer") } })
-        if (showAdd) AlertDialog(onDismissRequest = { showAdd = false }, title = { Text("Enregistrer une publication") }, text = { Column { Text("Partage un lien Instagram : ReelMind tentera une extraction publique. Si elle échoue, ajoute la légende ou un fichier média dans la fiche."); OutlinedTextField(newUrl, { newUrl = it }, label = { Text("URL Instagram") }, modifier = Modifier.fillMaxWidth()); OutlinedTextField(newCaption, { newCaption = it }, label = { Text("Légende (facultatif)") }, modifier = Modifier.fillMaxWidth(), minLines = 2) } }, confirmButton = { TextButton(onClick = { val clean = newUrl.trim().substringBefore('?').trimEnd('/'); if (!clean.startsWith("https://www.instagram.com/") && !clean.startsWith("https://instagram.com/")) { feedback = "Lien Instagram non reconnu" } else { vm.addShared(clean, newCaption) { added -> feedback = if (added) "Publication enregistrée" else "Déjà enregistrée" }; showAdd = false } }) { Text("Enregistrer") } }, dismissButton = { TextButton(onClick = { showAdd = false }) { Text("Annuler") } })
-    }
-}
-@Composable fun Detail(reel: Reel, onSave: (Reel) -> Unit, onDelete: () -> Unit,
-    onSummarize: (Reel) -> Unit, isProcessing: Boolean, onExport: () -> Unit, onOpen: () -> Unit,
-    onSpeak: () -> Unit, onImportMedia: () -> Unit, onRetry: () -> Unit, messages: List<ChatMessage>, onChatOpen: () -> Unit,
-    onAsk: (String) -> Unit, chatAnswering: Boolean) {
-    var title by remember(reel.id) { mutableStateOf(reel.title) }
-    var category by remember(reel.id) { mutableStateOf(reel.category) }
-    var summary by remember(reel.id, reel.summary) { mutableStateOf(reel.summary) }
-    var sourceText by remember(reel.id, reel.sourceText) { mutableStateOf(reel.sourceText) }
-    var note by remember(reel.id) { mutableStateOf(reel.note) }
-    var confirmDelete by remember { mutableStateOf(false) }
-    var chatExpanded by remember(reel.id) { mutableStateOf(false) }
-    var question by remember(reel.id) { mutableStateOf("") }
-    Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(reel.url, color = purple)
-        val stateText = when(reel.processingStatus) {
-            "done" -> "Résumé prêt"
-            "extracting" -> "Récupération du contenu…"
-            "summarizing" -> "Analyse IA en cours…"
-            "blocked" -> "Contenu non accessible : texte ou fichier nécessaire"
-            "failed" -> "Traitement interrompu"
-            else -> "À traiter"
-        }
-        Text(stateText, color = if (reel.processingStatus == "done") Color(0xFF85CFB0) else purple)
-        if (reel.processingError.isNotBlank()) Text(reel.processingError, style = MaterialTheme.typography.bodySmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onRetry) { Text("Relancer") }
-            OutlinedButton(onClick = onImportMedia) { Text("Ajouter audio, vidéo ou image") }
-        }
-        if (reel.author.isNotBlank()) Text("Auteur : ${reel.author}", style = MaterialTheme.typography.bodySmall)
-        if (reel.originalCaption.isNotBlank()) Text("Légende originale : ${reel.originalCaption.take(1500)}", style = MaterialTheme.typography.bodySmall)
-        if (reel.mediaText.isNotBlank()) Text("Transcription enregistrée (${reel.mediaText.length} caractères)", style = MaterialTheme.typography.bodySmall)
-        TextButton(onClick = onOpen) { Text("Ouvrir dans Instagram / navigateur") }
-        OutlinedTextField(title, { title = it }, label = { Text("Titre") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(category, { category = it }, label = { Text("Catégorie / tags") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(sourceText, { sourceText = it }, label = { Text("Texte source : légende ou transcription") }, minLines = 4, modifier = Modifier.fillMaxWidth())
-        Button(onClick = {
-            val updated = reel.copy(title = title, category = category, summary = summary, sourceText = sourceText, note = note)
-            onSave(updated)
-            onSummarize(updated)
-        }, enabled = !isProcessing && sourceText.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
-            Text(if (isProcessing) "Résumé en cours…" else "Générer le résumé IA")
-        }
-        OutlinedTextField(summary, { summary = it }, label = { Text("Résumé") }, minLines = 4, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(note, { note = it }, label = { Text("Mes notes") }, minLines = 3, modifier = Modifier.fillMaxWidth())
-        Button(onClick = { onSave(reel.copy(title = title, category = category, summary = summary, sourceText = sourceText, note = note)) }, modifier = Modifier.fillMaxWidth()) { Text("Enregistrer les modifications") }
-        if (reel.summary.isNotBlank()) {
-            OutlinedButton(onClick = onSpeak, modifier = Modifier.fillMaxWidth()) { Text("Écouter le résumé (voix Android)") }
-        }
-        OutlinedButton(onClick = { chatExpanded = !chatExpanded; if (chatExpanded) onChatOpen() },
-            modifier = Modifier.fillMaxWidth()) { Text(if (chatExpanded) "Masquer la discussion" else "Discuter avec ce Reel") }
-        if (chatExpanded) {
-            Text("Questions/réponses conservées localement", style = MaterialTheme.typography.labelMedium)
-            messages.forEach { msg ->
-                Surface(color = if (msg.role == "user") MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text(if (msg.role == "user") "Vous" else "ReelMind IA", fontWeight = FontWeight.Bold)
-                        Text(msg.content)
-                    }
-                }
-            }
-            OutlinedTextField(question, { question = it }, label = { Text("Poser une question sur ce Reel") },
-                modifier = Modifier.fillMaxWidth(), minLines = 2)
-            Button(onClick = { onAsk(question.trim()); question = "" },
-                enabled = question.isNotBlank() && !chatAnswering, modifier = Modifier.fillMaxWidth()) {
-                Text(if (chatAnswering) "Réponse en cours…" else "Envoyer la question")
-            }
-        }
-        OutlinedButton(onClick = onExport, modifier = Modifier.fillMaxWidth()) { Text("Partager / exporter la fiche (Markdown)") }
-        TextButton(onClick = { confirmDelete = true }) { Text("Supprimer cette fiche") }
-    }
-    if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("Supprimer cette fiche ?") }, confirmButton = { TextButton(onClick = onDelete) { Text("Supprimer") } }, dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Annuler") } })
 }
 
 fun exportMarkdown(reel: Reel): String = buildString {
