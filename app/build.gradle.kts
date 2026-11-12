@@ -7,7 +7,14 @@ plugins {
 android {
     namespace = "fr.reelmind.app"
     compileSdk = 35
-    defaultConfig { applicationId = "fr.reelmind.app"; minSdk = 26; targetSdk = 35; versionCode = 5; versionName = "0.5.0" }
+    defaultConfig {
+        applicationId = "fr.reelmind.app"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 5
+        versionName = "0.5.0"
+        ndk { abiFilters += listOf("arm64-v8a") }
+    }
     signingConfigs {
         create("production") {
             val keystore = System.getenv("REELMIND_KEYSTORE_PATH")
